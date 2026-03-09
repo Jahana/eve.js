@@ -1,5 +1,5 @@
 /**
- * EVE.js — Main Entry Point
+ * eve.js main entry point
  *
  * Initializes the service manager, registers core game services,
  * and starts the TCP server.
@@ -19,7 +19,6 @@ const ServiceManager = require(
 const startTCPServer = require(path.join(__dirname, "./src/network/tcp"));
 
 // main startup
-
 log.logAsciiLogo();
 console.log();
 log.info("starting eve.js...");

@@ -1,7 +1,0 @@
-{
-    "autoLaunch":  false,
-    "serverPort":  26000,
-    "clientPath":  "D:/GAMES/EveOnline/localhost",
-    "devMode":  true,
-    "logLevel":  2
-}

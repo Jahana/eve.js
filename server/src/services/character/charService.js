@@ -9,7 +9,7 @@
 
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
-const database = require("../../newDatabase");
+const database = require("../../database");
 const { applyCharacterToSession } = require("./characterState");
 
 /**

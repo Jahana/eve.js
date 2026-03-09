@@ -33,6 +33,8 @@ this solves the issue where the client says ... has no attribute 'Index'
 ###########################
 
 - !! tidy up newly added files (new config, chat service)
+- ! edit scripts and make one universal script, (and seperate ones) to auto install, start server + game
+- players should show up in local chat + corp chat
 - make all files dependant of eachother AND database.. stop returning static data, and return valid data based on character state
 - implement linux support (e.g. give the user an option to auto launch the client)
 - sort the service files and place them in the correct folders
@@ -48,12 +50,12 @@ this solves the issue where the client says ... has no attribute 'Index'
 - add multi-user support
   - i can connect multiple clients, but only one shows up in the guests list in jita. its because im only returning one character in stationsvc
   - i will need to check db every time someone logs on to see how many users are online, then broadcast update to all players with updated list
+- undocking!
 
 ###########################
 ###   WHERE I LEFT OFF  ###
 ###########################
-on character creation, when the new character enters jita, it does not have a ship.
-the database is probly not updating the new character with items, until after the log off then back in
+cleaning up files, edit scripts and make one universal script, (and seperate ones) to auto install, start server + game
 
 
 ###########################

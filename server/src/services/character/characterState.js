@@ -1,73 +1,76 @@
-const fs = require("fs");
-const path = require("path");
+const log = require("../../utils/logger");
+const database = require("../../database");
+const { resolveShipByTypeID } = require("../chat/shipTypeRegistry");
 
-const log = require(path.join(__dirname, "../../utils/logger"));
-const { resolveShipByTypeID } = require(path.join(
-  __dirname,
-  "../chat/shipTypeRegistry",
-));
+const CHARACTERS_TABLE = "characters";
+const DB_ROOT_PATH = "/";
 
-const LEGACY_DB_PATH = path.join(__dirname, "../../database/db.json");
-const SPLIT_DB_CHARACTERS_PATH = path.join(
-  __dirname,
-  "../../newDatabase/data/characters/data.json",
-);
+// Kept for backwards-compatible exports. Data is now stored through database controller.
+const LEGACY_DB_PATH = `${CHARACTERS_TABLE}:${DB_ROOT_PATH}`;
+const SPLIT_DB_CHARACTERS_PATH = `${CHARACTERS_TABLE}:${DB_ROOT_PATH}`;
 
-function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
-}
-
-function writeJson(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-}
-
-function readLegacyDb() {
-  return readJson(LEGACY_DB_PATH);
-}
-
-function writeLegacyDb(data) {
-  writeJson(LEGACY_DB_PATH, data);
-}
-
-function readSplitCharacters() {
-  if (!fs.existsSync(SPLIT_DB_CHARACTERS_PATH)) {
+function readCharactersRoot() {
+  const result = database.read(CHARACTERS_TABLE, DB_ROOT_PATH);
+  if (!result.success || !result.data || typeof result.data !== "object") {
     return {};
   }
 
-  return readJson(SPLIT_DB_CHARACTERS_PATH);
+  return result.data;
+}
+
+function writeCharactersRoot(characters) {
+  return database.write(CHARACTERS_TABLE, DB_ROOT_PATH, characters);
+}
+
+function readLegacyDb() {
+  return {
+    characters: readCharactersRoot(),
+  };
+}
+
+function writeLegacyDb(data) {
+  const characters = data && typeof data === "object" ? data.characters : null;
+  writeCharactersRoot(
+    characters && typeof characters === "object" ? characters : {},
+  );
+}
+
+function readSplitCharacters() {
+  return readCharactersRoot();
 }
 
 function writeSplitCharacters(data) {
-  writeJson(SPLIT_DB_CHARACTERS_PATH, data);
+  writeCharactersRoot(data && typeof data === "object" ? data : {});
 }
 
 function getCharacterRecord(charId) {
-  const db = readLegacyDb();
-  const characters = db.characters || {};
-  return characters[String(charId)] || null;
+  const result = database.read(CHARACTERS_TABLE, `/${String(charId)}`);
+  if (!result.success || !result.data || typeof result.data !== "object") {
+    return null;
+  }
+
+  return result.data;
 }
 
 function updateCharacterRecord(charId, updater) {
-  const db = readLegacyDb();
-  if (!db.characters || !db.characters[String(charId)]) {
+  const charPath = `/${String(charId)}`;
+  const characterResult = database.read(CHARACTERS_TABLE, charPath);
+  if (!characterResult.success || !characterResult.data) {
     return {
       success: false,
       errorMsg: "CHARACTER_NOT_FOUND",
     };
   }
 
-  const existing = db.characters[String(charId)];
+  const existing = characterResult.data;
   const updated = typeof updater === "function" ? updater(existing) : updater;
-  db.characters[String(charId)] = updated;
-  writeLegacyDb(db);
+  const writeResult = database.write(CHARACTERS_TABLE, charPath, updated);
 
-  const splitCharacters = readSplitCharacters();
-  if (splitCharacters[String(charId)]) {
-    splitCharacters[String(charId)] = {
-      ...splitCharacters[String(charId)],
-      ...updated,
+  if (!writeResult.success) {
+    return {
+      success: false,
+      errorMsg: writeResult.errorMsg || "WRITE_FAILED",
     };
-    writeSplitCharacters(splitCharacters);
   }
 
   return {
@@ -119,9 +122,8 @@ function applyCharacterToSession(session, charId, options = {}) {
     };
   }
 
-  const db = readLegacyDb();
-  const characters = db.characters || {};
-  const charData = characters[String(charId)];
+  const characterResult = database.read(CHARACTERS_TABLE, `/${String(charId)}`);
+  const charData = characterResult.success ? characterResult.data : null;
   if (!charData) {
     return {
       success: false,

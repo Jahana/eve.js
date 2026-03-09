@@ -16,7 +16,7 @@ const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 
 const log = require(path.join(__dirname, "../../utils/logger"));
-const database = require("../../newDatabase")
+const database = require("../../database")
 
 /**
  * Extract a plain JS array from a value that might be:

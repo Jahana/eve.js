@@ -32,7 +32,7 @@ const {
 } = require(path.join(__dirname, "./utils/marshal"));
 
 // database
-const database = require("../../newDatabase")
+const database = require("../../database")
 
 // The "marshaledNone" from EVE_Consts.h — a pickled Python None object
 // 0x74 = cPickle header, then 4-byte length LE, then "None" as ASCII

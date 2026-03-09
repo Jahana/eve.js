@@ -1,0 +1,2 @@
+[2026-03-09T23:32:01.918Z] CallReq method=SlashCmd callID=133 args=["<Buffer:/>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-09T23:32:01.923Z] SlashCmd user=1 char=140000001 command="/" args=["<Buffer:/>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}

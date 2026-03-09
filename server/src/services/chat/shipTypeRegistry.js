@@ -8,7 +8,7 @@ const REFERENCE_INV_TYPES_PATH = "C:\\evemu_Crucible\\sql\\base\\invTypes.sql.gz
 const REFERENCE_INV_GROUPS_PATH = "C:\\evemu_Crucible\\sql\\base\\invGroups.sql.gz";
 const GENERATED_SHIP_DATA_PATH = path.join(
   __dirname,
-  "../../../data/sde/shipTypes.json",
+  "../../database/static/shipTypes.json",
 );
 const SHIP_CATEGORY_ID = 6;
 const FALLBACK_SHIPS = [

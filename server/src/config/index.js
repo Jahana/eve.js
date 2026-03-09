@@ -1,28 +1,30 @@
 /**
- * EVE.js Server Configuration
+ * SERVER CONFIGURATION
+ * (skeleton code by AI, revised by Icey and John)
  *
- * Default values live here. Optional local overrides can be supplied in
- * evejs.config.local.json at the repository root, or with EVEJS_* env vars.
+ * default values live here.
+ * local overrides can be supplied in evejs.config.json at the repository root
  */
+
+// removed sharedConfigPath as i dont see a use case for it.
+// also removed support for environment variables. dont see a use case for it.
 
 const fs = require("fs");
 const path = require("path");
 
-let nextBoundId = 1;
-
-const rootDir = path.resolve(__dirname, "../../..");
-const localConfigPath = path.join(rootDir, "evejs.config.local.json");
-const sharedConfigPath = path.join(rootDir, "evejs.config.json");
+const configPath = path.join(__dirname, "../../../evejs.config.json");
 
 const defaults = {
-  // dev mode does the following
-  //  - auto creates users when they log in (and user is not in database)
-  //  - authenticates you even when password is incorrect
+  /**
+   * DEV MODE:
+   * - auto create non-existant accounts.
+   * - authenticates you even when password is incorrect
+   */
   devMode: true,
 
   // the launcher writes the detected client path here
   clientPath: "",
-  autoLaunch: true,
+  autoLaunch: false,
 
   // client version info
   clientVersion: 23.02,
@@ -33,98 +35,47 @@ const defaults = {
   projectRegion: "ccp",
   projectVersion: "V23.02@ccp",
 
+  // WARNING: logLevel not implemented at the moment
   // 2: log everything; 1: log errors (default); 0: log nothing;
   logLevel: 2,
 
-  // #### WARNING #### \\
-  // it is recommended not to edit the config values
-  // below unless you know what you're doing!
-  // #### WARNING #### \\
+  /**
+   * #### WARNING ####
+   * it is not recommended to change config values
+   * below unless you know what you are doing!
+   * #### WARNING ####
+   */
 
-  // main server
+  // main server (default for clients is 26000)
   serverPort: 26000,
 
-  // image server
-  // imageServerPort: 26001,
+  // TODO: change so it is port instead of url
+  // image server (default for clients is 26001)
   imageServerUrl: "http://127.0.0.1:26001/",
 
+  // WARNING: microservices not implemented at the moment
   // where microservices will be sent instead of official CCP servers.
   microservicesRedirectUrl: "http://localhost:26002/",
 
-  // chat server
+  // chat server (default for clients is 5222)
   xmppServerPort: 5222,
 
+  // DO NOT CHANGE
   // proxy node ID: evemu uses 0xFFAA
   proxyNodeId: 0xffaa,
 };
 
-function readJsonConfig(filePath) {
-  if (!fs.existsSync(filePath)) {
-    return {};
-  }
+// read json config from root dir
+let configJson = JSON.parse(fs.readFileSync(configPath))
 
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch (error) {
-    throw new Error(`Invalid JSON in ${filePath}: ${error.message}`);
-  }
-}
-
-function parseBoolean(value) {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) {
-    return true;
-  }
-  if (["0", "false", "no", "off"].includes(normalized)) {
-    return false;
-  }
-
-  return undefined;
-}
-
-function parseNumber(value) {
-  if (typeof value !== "string" || value.trim() === "") {
-    return undefined;
-  }
-
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function withDefinedEntries(values) {
-  return Object.fromEntries(
-    Object.entries(values).filter(([, value]) => value !== undefined),
-  );
-}
-
-const fileConfig = {
-  ...readJsonConfig(sharedConfigPath),
-  ...readJsonConfig(localConfigPath),
-};
-
-const envConfig = withDefinedEntries({
-  devMode: parseBoolean(process.env.EVEJS_DEV_MODE),
-  clientPath: process.env.EVEJS_CLIENT_PATH || undefined,
-  autoLaunch: parseBoolean(process.env.EVEJS_AUTO_LAUNCH),
-  logLevel: parseNumber(process.env.EVEJS_LOG_LEVEL),
-  serverPort: parseNumber(process.env.EVEJS_SERVER_PORT),
-  imageServerUrl: process.env.EVEJS_IMAGE_SERVER_URL || undefined,
-  microservicesRedirectUrl:
-    process.env.EVEJS_MICROSERVICES_REDIRECT_URL || undefined,
-  xmppServerPort: parseNumber(process.env.EVEJS_XMPP_SERVER_PORT),
-  proxyNodeId: parseNumber(process.env.EVEJS_PROXY_NODE_ID),
-});
-
+// assemble config
 const config = {
   ...defaults,
-  ...fileConfig,
-  ...envConfig,
-};
+  ...configJson
+}
 
+// bound ID stuff
+let nextBoundId = 1;
 config.getNextBoundId = function getNextBoundId() {
   return nextBoundId++;
 };
