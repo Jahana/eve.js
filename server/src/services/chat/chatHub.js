@@ -87,7 +87,8 @@ function getLocalChannelForSession(session) {
     type: "solarsystemid2",
     ownerID: 1,
     displayName: "Local",
-    motd: "<br>eve.js Local Chat<br>Commands: /help, /ship <name>",
+    motd:
+      "<br>eve.js Local Chat<br>Commands: /help, /wallet, /where, /who, /ship <name>",
     comparisonKey: channelName,
     memberless: false,
     password: null,

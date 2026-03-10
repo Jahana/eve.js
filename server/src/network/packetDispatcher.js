@@ -154,7 +154,16 @@ class PacketDispatcher {
     if (this.serviceManager && serviceName) {
       const service = this.serviceManager.lookup(serviceName);
       if (service) {
+        const previousBoundObjectID = session
+          ? session.currentBoundObjectID
+          : null;
         try {
+          if (session) {
+            session.currentBoundObjectID =
+              typeof serviceName === "string" && serviceName.startsWith("N=")
+                ? serviceName
+                : null;
+          }
           const result = service.callMethod(
             call.method,
             call.args,
@@ -183,6 +192,10 @@ class PacketDispatcher {
             this._sendCallResponse(pkt, null, session);
           }
           return true;
+        } finally {
+          if (session) {
+            session.currentBoundObjectID = previousBoundObjectID || null;
+          }
         }
       } else {
         log.warn(`[CallReq] No service registered for: ${serviceName}`);

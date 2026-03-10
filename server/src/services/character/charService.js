@@ -10,7 +10,11 @@
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
 const database = require("../../database");
-const { applyCharacterToSession } = require("./characterState");
+const { applyCharacterToSession, getCharacterRecord } = require("./characterState");
+const {
+  ensureCharacterSkills,
+  getCharacterSkillPointTotal,
+} = require("../skills/skillState");
 
 /**
  * Build a util.KeyVal PyObject — the only working PyObject type in V23.02
@@ -29,6 +33,11 @@ function buildKeyVal(entries) {
 class CharService extends BaseService {
   constructor() {
     super("charUnboundMgr");
+  }
+
+  _normalizeAllianceId(value) {
+    const numeric = Number(value) || 0;
+    return numeric > 0 ? numeric : null;
   }
 
   /**
@@ -106,9 +115,12 @@ class CharService extends BaseService {
     const trainingDetails = [null, null];
 
     const characterDetails = [];
-    for (const [charId, character] of Object.entries(characters)) {
-      if (character.accountId === userId) {
+    for (const [charId, rawCharacter] of Object.entries(characters)) {
+      if (rawCharacter.accountId === userId) {
+        const character = getCharacterRecord(charId) || rawCharacter;
         const cid = parseInt(charId, 10);
+        const allianceID = this._normalizeAllianceId(character.allianceID);
+        const skillPoints = getCharacterSkillPointTotal(cid) || character.skillPoints || 50000;
         characterDetails.push(
           buildKeyVal([
             ["characterID", cid],
@@ -118,18 +130,22 @@ class CharService extends BaseService {
             ["typeID", character.typeID || 1373],
             ["bloodlineID", character.bloodlineID || 1],
             ["corporationID", character.corporationID || 1000009],
-            ["allianceID", character.allianceID || 0],
+            ["allianceID", allianceID],
+            // Keep character-select payload close to upstream.
+            // Exposing empire/school/faction state here caused the client to
+            // incorrectly surface war/faction UI on the selection screen.
             ["factionID", null],
             ["stationID", character.stationID || 60003760],
             ["solarSystemID", character.solarSystemID || 30000142],
             ["constellationID", character.constellationID || 20000020],
             ["regionID", character.regionID || 10000002],
-            ["balance", character.balance || 100000.0],
+            ["balance", character.balance ?? 100000.0],
             ["balanceChange", 0.0],
-            ["skillPoints", character.skillPoints || 50000],
+            ["skillPoints", skillPoints],
             ["shipTypeID", character.shipTypeID || 606],
             ["shipName", character.shipName || "Velator"],
-            ["securityRating", character.securityRating || 0.0],
+            ["securityRating", character.securityStatus ?? character.securityRating ?? 0.0],
+            ["securityStatus", character.securityStatus ?? character.securityRating ?? 0.0],
             ["title", character.title || ""],
             ["unreadMailCount", character.unreadMailCount || 0],
             ["paperdollState", character.paperDollState || 0],
@@ -180,7 +196,12 @@ class CharService extends BaseService {
 
     const characterResult = database.read("characters", "/");
     const characters = characterResult.success ? characterResult.data : {};
-    const character = characters[String(charId)];
+    const character = getCharacterRecord(charId) || characters[String(charId)];
+    const allianceID = this._normalizeAllianceId(character && character.allianceID);
+    const skillPoints =
+      getCharacterSkillPointTotal(charId) ||
+      (character && character.skillPoints) ||
+      50000;
 
     if (!character) {
       log.warn(`[CharService] Character ${charId} not found`);
@@ -209,18 +230,19 @@ class CharService extends BaseService {
       ["solarSystemID", character.solarSystemID || 30000142],
       ["constellationID", character.constellationID || 20000020],
       ["regionID", character.regionID || 10000002],
-      ["allianceID", character.allianceID || 0],
-      ["allianceMemberStartDate", character.allianceMemberStartDate || 0],
+      ["allianceID", allianceID],
+      ["allianceMemberStartDate", allianceID ? character.allianceMemberStartDate || 0 : null],
       ["shortName", character.shortName || "none"],
       ["bounty", character.bounty || 0.0],
       ["skillQueueEndTime", { type: "long", value: character.skillQueueEndTime || 0 }],
-      ["skillPoints", character.skillPoints || 50000],
+      ["skillPoints", skillPoints],
       ["shipTypeID", character.shipTypeID || 606],
       ["shipName", character.shipName || "Ship"],
-      ["securityRating", character.securityRating || 0.0],
+      ["securityRating", character.securityStatus ?? character.securityRating ?? 0.0],
+      ["securityStatus", character.securityStatus ?? character.securityRating ?? 0.0],
       ["title", character.title || ""],
-      ["balance", character.balance || 100000.0],
-      ["aurBalance", character.aurBalance || 0.0],
+      ["balance", character.balance ?? 100000.0],
+      ["aurBalance", character.aurBalance ?? 0.0],
       ["daysLeft", character.daysLeft || 365],
       ["userType", character.userType || 30],
       ["paperDollState", character.paperDollState || 0],
@@ -339,6 +361,7 @@ class CharService extends BaseService {
       `/${String(newCharId)}`,
       characters[String(newCharId)],
     );
+    ensureCharacterSkills(newCharId);
 
     log.success(
       `[CharService] Created character "${characterName}" with ID ${newCharId}`,
@@ -374,7 +397,7 @@ class CharService extends BaseService {
 
   Handle_GetCharacterInfo(args, session) {
     log.debug("[CharService] GetCharacterInfo");
-    return null;
+    return this.Handle_GetCharacterToSelect(args, session);
   }
 
   Handle_GetCharOmegaDowngradeStatus(args, session, kwargs) {

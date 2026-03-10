@@ -17,6 +17,23 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 
 const log = require(path.join(__dirname, "../../utils/logger"));
 const database = require("../../database")
+const { getCharacterShips } = require(path.join(
+  __dirname,
+  "../character/characterState",
+));
+const shipData = require(path.join(__dirname, "../../database/static/shipTypes.json"));
+const { buildKeyVal } = require(path.join(
+  __dirname,
+  "../_shared/serviceHelpers",
+));
+const { getStationRecord } = require(path.join(
+  __dirname,
+  "../_shared/stationStaticData",
+));
+const { getStaticOwnerRecord } = require(path.join(
+  __dirname,
+  "../_shared/stationStaticData",
+));
 
 /**
  * Extract a plain JS array from a value that might be:
@@ -34,6 +51,17 @@ function extractList(val) {
     return val.items;
   }
   return [];
+}
+
+function buildAveragePriceEntry(price, adjustedPrice = null) {
+  const normalizedAverage = Number(price) || 0;
+  const normalizedAdjusted =
+    adjustedPrice == null ? normalizedAverage : Number(adjustedPrice) || 0;
+
+  return buildKeyVal([
+    ["averagePrice", normalizedAverage],
+    ["adjustedPrice", normalizedAdjusted],
+  ]);
 }
 
 class ConfigService extends BaseService {
@@ -60,11 +88,16 @@ class ConfigService extends BaseService {
     const rows = [];
 
     for (const id of requestedIds) {
+      const numericId = Number(id) || 0;
+      if (numericId <= 0) {
+        continue;
+      }
+
       // Check if this is a character ID we know about
-      const charData = characters[String(id)];
+      const charData = characters[String(numericId)];
       if (charData) {
         rows.push([
-          id, // ownerID
+          numericId, // ownerID
           charData.characterName || "Unknown", // ownerName
           charData.typeID || 1373, // typeID
           charData.gender || 1, // gender
@@ -73,11 +106,23 @@ class ConfigService extends BaseService {
         continue;
       }
 
-      // NPC corps (1000000-1999999 range)
-      if (id >= 1000000 && id < 2000000) {
+      const staticOwner = getStaticOwnerRecord(id, session);
+      if (staticOwner) {
         rows.push([
-          id,
-          `Corporation ${id}`,
+          staticOwner.ownerID,
+          staticOwner.ownerName,
+          staticOwner.typeID,
+          staticOwner.gender,
+          null,
+        ]);
+        continue;
+      }
+
+      // NPC corps (1000000-1999999 range)
+      if (numericId >= 1000000 && numericId < 2000000) {
+        rows.push([
+          numericId,
+          `Corporation ${numericId}`,
           2, // typeID = 2 (Corporation)
           0, // gender
           null, // ownerNameID
@@ -86,7 +131,7 @@ class ConfigService extends BaseService {
       }
 
       // Unknown entities — return placeholder
-      rows.push([id, `Entity ${id}`, 1, 0, null]);
+      rows.push([numericId, `Entity ${numericId}`, 1, 0, null]);
     }
 
     if (rows.length === 0) {
@@ -111,6 +156,17 @@ class ConfigService extends BaseService {
 
     const characterResult = database.read("characters", "/")
     const characters = characterResult.success ? characterResult.data : {}
+    const station = getStationRecord(session);
+    const locationNameById = new Map([
+      [station.stationID, station.stationName],
+      [station.orbitID, station.stationName],
+      [station.solarSystemID, station.solarSystemName || `System ${station.solarSystemID}`],
+      [
+        station.constellationID,
+        station.constellationName || `Constellation ${station.constellationID}`,
+      ],
+      [station.regionID, station.regionName || `Region ${station.regionID}`],
+    ]);
 
     const shipNameById = new Map();
     const charNameById = new Map();
@@ -119,24 +175,33 @@ class ConfigService extends BaseService {
       if (Number.isInteger(cid)) {
         charNameById.set(cid, c.characterName || `Character ${cid}`);
       }
-      if (c && Number.isInteger(c.shipID)) {
-        shipNameById.set(c.shipID, c.shipName || "Velator");
+      for (const ship of getCharacterShips(cid)) {
+        if (ship && Number.isInteger(ship.shipID)) {
+          shipNameById.set(ship.shipID, ship.shipName || "Ship");
+        }
       }
     }
 
     const rows = [];
 
     for (const id of requestedIds) {
-      if (shipNameById.has(id)) {
-        rows.push([id, shipNameById.get(id), 0.0, 0.0, 0.0, null]);
-      } else if (charNameById.has(id)) {
-        rows.push([id, charNameById.get(id), 0.0, 0.0, 0.0, null]);
-      } else if (id >= 60000000 && id < 64000000) {
-        rows.push([id, `Station ${id}`, 0.0, 0.0, 0.0, null]);
-      } else if (id >= 30000000 && id < 40000000) {
-        rows.push([id, `System ${id}`, 0.0, 0.0, 0.0, null]);
+      const numericId = Number(id) || 0;
+      if (numericId <= 0) {
+        continue;
+      }
+
+      if (locationNameById.has(numericId)) {
+        rows.push([numericId, locationNameById.get(numericId), 0.0, 0.0, 0.0, null]);
+      } else if (shipNameById.has(numericId)) {
+        rows.push([numericId, shipNameById.get(numericId), 0.0, 0.0, 0.0, null]);
+      } else if (charNameById.has(numericId)) {
+        rows.push([numericId, charNameById.get(numericId), 0.0, 0.0, 0.0, null]);
+      } else if (numericId >= 60000000 && numericId < 64000000) {
+        rows.push([numericId, `Station ${numericId}`, 0.0, 0.0, 0.0, null]);
+      } else if (numericId >= 30000000 && numericId < 40000000) {
+        rows.push([numericId, `System ${numericId}`, 0.0, 0.0, 0.0, null]);
       } else {
-        rows.push([id, `Location ${id}`, 0.0, 0.0, 0.0, null]);
+        rows.push([numericId, `Location ${numericId}`, 0.0, 0.0, 0.0, null]);
       }
     }
 
@@ -175,15 +240,21 @@ class ConfigService extends BaseService {
     const rows = [];
 
     for (const id of requestedIds) {
+      const numericId = Number(id) || 0;
+      if (numericId <= 0) {
+        continue;
+      }
+
+      const staticOwner = getStaticOwnerRecord(numericId, session);
       rows.push([
-        id, // corporationID
-        "CORP", // tickerName
+        numericId,
+        staticOwner && staticOwner.tickerName ? staticOwner.tickerName : "CORP",
         0,
         0,
-        0, // shape1, shape2, shape3
         0,
         0,
-        0, // color1, color2, color3
+        0,
+        0,
       ]);
     }
 
@@ -228,7 +299,16 @@ class ConfigService extends BaseService {
 
   Handle_GetAverageMarketPrices(args, session) {
     log.debug("[ConfigService] GetAverageMarketPrices");
-    return { type: "dict", entries: [] };
+    const ships = Array.isArray(shipData) ? shipData : shipData.ships || [];
+    return {
+      type: "dict",
+      entries: ships
+        .filter((ship) => Number(ship.typeID) > 0 && Number(ship.basePrice) > 0)
+        .map((ship) => [
+          Number(ship.typeID),
+          buildAveragePriceEntry(ship.basePrice),
+        ]),
+    };
   }
 }
 

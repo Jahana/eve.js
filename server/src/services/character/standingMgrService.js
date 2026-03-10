@@ -67,8 +67,8 @@ function emptyStandingsRowset(session) {
 }
 
 class StandingMgrService extends BaseService {
-  constructor() {
-    super("standingMgr");
+  constructor(name = "standingMgr") {
+    super(name);
   }
 
   Handle_GetNPCNPCStandings(args, session) {
@@ -87,4 +87,13 @@ class StandingMgrService extends BaseService {
   }
 }
 
-module.exports = StandingMgrService;
+class Standing2Service extends StandingMgrService {
+  constructor() {
+    super("standing2");
+  }
+}
+
+module.exports = {
+  StandingMgrService,
+  Standing2Service,
+};

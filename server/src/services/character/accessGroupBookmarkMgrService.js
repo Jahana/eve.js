@@ -1,3 +1,4 @@
+const path = require("path");
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
 
@@ -9,18 +10,10 @@ class AccessGroupBookmarkMgrService extends BaseService {
   Handle_GetMyActiveBookmarks(args, session) {
     log.debug("[AccessGroupBookmarkMgr] GetMyActiveBookmarks called");
     return [
-      { type: "list", entries: [] },
-      { type: "list", entries: [] },
-      { type: "list", entries: [] },
+      { type: "list", items: [] },
+      { type: "list", items: [] },
+      { type: "list", items: [] },
     ];
-    // return {
-    //   type: "tuple",
-    //   entries: [
-    //     { type: "list", entries: [] },
-    //     { type: "list", entries: [] },
-    //     { type: "list", entries: [] },
-    //   ],
-    // };
   }
 
   Handle_AddFolder(args, session) {

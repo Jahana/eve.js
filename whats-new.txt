@@ -1,6 +1,6 @@
-added evejs.config.example.json, and removed auto upload for evejs.config.json
-added new log for xmppStub so it matches other secondary services
-moved some stuff around in chat service & xmppStub
-added instructions to get chat server working, _README.txt
-added cacert.pem for client files
-added installChatCert.bat
+merged files from John:
+    new databases: items, skills
+    modified packet assembler files, marshal
+    new tutorial service
+    wallet functionality 
+    handfull of other new services

@@ -58,3 +58,10 @@ this solves the issue where the client says ... has no attribute 'Index'
 ###########################
 ###   WHERE I LEFT OFF  ###
 ###########################
+implement services: 
+shipCosmeticsMgr::GetEnabledCosmetics()
+chatAuthenticationService::GetAuthenticationToken()
+skillMgr::PurchaseSkills()
+
+players should show up in local chat + corp chat
+  players show up, but local count (e.g. Local [123]) for users does not function.

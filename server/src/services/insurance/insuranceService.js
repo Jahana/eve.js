@@ -1,6 +1,14 @@
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
+const { getCharacterHangarShipItems } = require(path.join(
+  __dirname,
+  "../inventory/itemStore",
+));
+const { buildKeyVal } = require(path.join(
+  __dirname,
+  "../_shared/serviceHelpers",
+));
 
 class InsuranceService extends BaseService {
   constructor() {
@@ -14,7 +22,22 @@ class InsuranceService extends BaseService {
 
   Handle_GetItemsToInsure(args, session) {
     log.debug("[InsuranceSvc] GetItemsToInsure");
-    return { type: "list", items: [] };
+    const ships = getCharacterHangarShipItems(session && session.characterID);
+    return {
+      type: "list",
+      items: ships.map((ship) =>
+        buildKeyVal([
+          ["itemID", ship.itemID],
+          ["typeID", ship.typeID],
+          ["ownerID", ship.ownerID],
+          ["locationID", ship.locationID],
+          ["groupID", ship.groupID],
+          ["categoryID", ship.categoryID],
+          ["singleton", ship.singleton],
+          ["shipName", ship.itemName || "Ship"],
+        ]),
+      ),
+    };
   }
 
   Handle_GetInsurancePrice(args, session) {

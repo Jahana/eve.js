@@ -1,16 +1,43 @@
-const log = require("../../utils/logger");
-const database = require("../../database");
-const { resolveShipByTypeID } = require("../chat/shipTypeRegistry");
+const path = require("path");
+
+const database = require(path.join(__dirname, "../../database"));
+const log = require(path.join(__dirname, "../../utils/logger"));
+const { resolveShipByTypeID } = require(path.join(
+  __dirname,
+  "../chat/shipTypeRegistry",
+));
+const {
+  ensureMigrated,
+  getCharacterShipItems,
+  getCharacterHangarShipItems,
+  findCharacterShipItem,
+  getActiveShipItem,
+  spawnShipInStationHangar,
+  setActiveShipForCharacter,
+} = require(path.join(__dirname, "../inventory/itemStore"));
+const {
+  ensureCharacterSkills,
+  getCharacterSkillPointTotal,
+} = require(path.join(__dirname, "../skills/skillState"));
 
 const CHARACTERS_TABLE = "characters";
-const DB_ROOT_PATH = "/";
+const EMPIRE_BY_CORPORATION = Object.freeze({
+  1000044: 500001,
+  1000115: 500002,
+  1000009: 500003,
+  1000006: 500004,
+});
 
-// Kept for backwards-compatible exports. Data is now stored through database controller.
-const LEGACY_DB_PATH = `${CHARACTERS_TABLE}:${DB_ROOT_PATH}`;
-const SPLIT_DB_CHARACTERS_PATH = `${CHARACTERS_TABLE}:${DB_ROOT_PATH}`;
+function cloneValue(value) {
+  return JSON.parse(JSON.stringify(value));
+}
 
-function readCharactersRoot() {
-  const result = database.read(CHARACTERS_TABLE, DB_ROOT_PATH);
+function buildList(items) {
+  return { type: "list", items };
+}
+
+function readCharacters() {
+  const result = database.read(CHARACTERS_TABLE, "/");
   if (!result.success || !result.data || typeof result.data !== "object") {
     return {};
   }
@@ -18,64 +45,23 @@ function readCharactersRoot() {
   return result.data;
 }
 
-function writeCharactersRoot(characters) {
-  return database.write(CHARACTERS_TABLE, DB_ROOT_PATH, characters);
-}
-
-function readLegacyDb() {
-  return {
-    characters: readCharactersRoot(),
-  };
-}
-
-function writeLegacyDb(data) {
-  const characters = data && typeof data === "object" ? data.characters : null;
-  writeCharactersRoot(
-    characters && typeof characters === "object" ? characters : {},
+function writeCharacterRecord(charId, record) {
+  const clonedRecord = cloneValue(record);
+  const writeResult = database.write(
+    CHARACTERS_TABLE,
+    `/${String(charId)}`,
+    clonedRecord,
   );
-}
-
-function readSplitCharacters() {
-  return readCharactersRoot();
-}
-
-function writeSplitCharacters(data) {
-  writeCharactersRoot(data && typeof data === "object" ? data : {});
-}
-
-function getCharacterRecord(charId) {
-  const result = database.read(CHARACTERS_TABLE, `/${String(charId)}`);
-  if (!result.success || !result.data || typeof result.data !== "object") {
-    return null;
-  }
-
-  return result.data;
-}
-
-function updateCharacterRecord(charId, updater) {
-  const charPath = `/${String(charId)}`;
-  const characterResult = database.read(CHARACTERS_TABLE, charPath);
-  if (!characterResult.success || !characterResult.data) {
-    return {
-      success: false,
-      errorMsg: "CHARACTER_NOT_FOUND",
-    };
-  }
-
-  const existing = characterResult.data;
-  const updated = typeof updater === "function" ? updater(existing) : updater;
-  const writeResult = database.write(CHARACTERS_TABLE, charPath, updated);
-
   if (!writeResult.success) {
     return {
       success: false,
-      errorMsg: writeResult.errorMsg || "WRITE_FAILED",
+      errorMsg: writeResult.errorMsg || "WRITE_ERROR",
     };
   }
 
   return {
     success: true,
-    data: updated,
+    data: clonedRecord,
   };
 }
 
@@ -99,19 +85,193 @@ function toBigInt(value, fallback = 0n) {
   return fallback;
 }
 
-function nextShipId(charId, currentShipId) {
-  const baseShipId = Number.isInteger(currentShipId)
-    ? currentShipId
-    : Number(charId) + 100;
-  return baseShipId + 1;
-}
-
 function normalizeSessionShipValue(value) {
   if (value === undefined || value === null || value === 0) {
     return null;
   }
 
   return value;
+}
+
+function appendSessionChange(changes, key, oldValue, newValue) {
+  if (oldValue === newValue) {
+    return;
+  }
+
+  changes[key] = [oldValue, newValue];
+}
+
+function deriveEmpireID(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  const corporationID = Number(record.corporationID || 0);
+  return EMPIRE_BY_CORPORATION[corporationID] || null;
+}
+
+function deriveFactionID(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(record, "factionID")) {
+    if (record.factionID === null || record.factionID === undefined || record.factionID === 0) {
+      return null;
+    }
+
+    return Number(record.factionID) || null;
+  }
+
+  return null;
+}
+
+function normalizeCharacterRecord(charId, record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  ensureMigrated();
+  ensureCharacterSkills(charId);
+
+  const normalized = {
+    ...record,
+  };
+  const activeShip = getActiveShipItem(charId);
+  const totalSkillPoints = getCharacterSkillPointTotal(charId);
+
+  if (activeShip) {
+    normalized.shipID = activeShip.itemID;
+    normalized.shipTypeID = activeShip.typeID;
+    normalized.shipName = activeShip.itemName;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(normalized, "factionID")) {
+    normalized.factionID = null;
+  }
+  normalized.factionID = deriveFactionID(normalized);
+  normalized.empireID = deriveEmpireID(normalized);
+  if (!normalized.schoolID) {
+    normalized.schoolID = normalized.corporationID || null;
+  }
+  normalized.securityStatus = Number(
+    normalized.securityStatus ?? normalized.securityRating ?? 0,
+  );
+  normalized.securityRating = normalized.securityStatus;
+  if (Number.isFinite(totalSkillPoints) && totalSkillPoints > 0) {
+    normalized.skillPoints = totalSkillPoints;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(normalized, "storedShips")) {
+    delete normalized.storedShips;
+  }
+
+  return normalized;
+}
+
+function getCharacterRecord(charId) {
+  ensureMigrated();
+
+  const characters = readCharacters();
+  const rawRecord = characters[String(charId)];
+  if (!rawRecord) {
+    return null;
+  }
+
+  const normalizedRecord = normalizeCharacterRecord(charId, rawRecord);
+  if (!normalizedRecord) {
+    return null;
+  }
+
+  if (JSON.stringify(rawRecord) !== JSON.stringify(normalizedRecord)) {
+    writeCharacterRecord(charId, normalizedRecord);
+  }
+
+  return normalizedRecord;
+}
+
+function updateCharacterRecord(charId, updater) {
+  const currentRecord = getCharacterRecord(charId);
+  if (!currentRecord) {
+    return {
+      success: false,
+      errorMsg: "CHARACTER_NOT_FOUND",
+    };
+  }
+
+  const updatedRecord =
+    typeof updater === "function" ? updater(cloneValue(currentRecord)) : updater;
+  const normalizedRecord = normalizeCharacterRecord(charId, updatedRecord);
+  return writeCharacterRecord(charId, normalizedRecord);
+}
+
+function getCharacterShips(charId) {
+  return getCharacterShipItems(charId);
+}
+
+function findCharacterShip(charId, shipId) {
+  return findCharacterShipItem(charId, shipId);
+}
+
+function getActiveShipRecord(charId) {
+  return getActiveShipItem(charId);
+}
+
+function buildInventoryItemRow(item) {
+  return {
+    type: "object",
+    name: "util.Row",
+    args: {
+      type: "dict",
+      entries: [
+        [
+          "header",
+          buildList([
+            "itemID",
+            "typeID",
+            "ownerID",
+            "locationID",
+            "flagID",
+            "quantity",
+            "groupID",
+            "categoryID",
+            "customInfo",
+            "singleton",
+            "stacksize",
+          ]),
+        ],
+        [
+          "line",
+          buildList([
+            item.itemID,
+            item.typeID,
+            item.ownerID,
+            item.locationID,
+            item.flagID,
+            item.quantity,
+            item.groupID,
+            item.categoryID,
+            item.customInfo || "",
+            item.singleton,
+            item.stacksize,
+          ]),
+        ],
+      ],
+    },
+  };
+}
+
+function buildLocationChangePayload(item) {
+  return buildList([item.itemID, item.itemName || "Ship", 0.0, 0.0, 0.0]);
+}
+
+function sendShipInventorySync(session, charData) {
+  if (!session || typeof session.sendNotification !== "function" || !charData) {
+    return;
+  }
+  // The live inventory sync path is temporarily disabled until the exact
+  // OnItemChange tuple contract for this client build is implemented.
+  // Sending the wrong tuple shape breaks station load during login.
 }
 
 function applyCharacterToSession(session, charId, options = {}) {
@@ -122,14 +282,21 @@ function applyCharacterToSession(session, charId, options = {}) {
     };
   }
 
-  const characterResult = database.read(CHARACTERS_TABLE, `/${String(charId)}`);
-  const charData = characterResult.success ? characterResult.data : null;
+  const charData = getCharacterRecord(charId);
   if (!charData) {
     return {
       success: false,
       errorMsg: "CHARACTER_NOT_FOUND",
     };
   }
+
+  const activeShip =
+    getActiveShipRecord(charId) ||
+    resolveShipByTypeID(charData.shipTypeID || 606) || {
+      itemID: charData.shipID || Number(charId) + 100,
+      typeID: charData.shipTypeID || 606,
+      itemName: charData.shipName || "Ship",
+    };
 
   const oldCharID = session.characterID;
   const oldCorpID = session.corporationID;
@@ -138,72 +305,171 @@ function applyCharacterToSession(session, charId, options = {}) {
   const oldSolarSystemID = session.solarsystemid2 || session.solarsystemid || null;
   const oldConstellationID = session.constellationID;
   const oldRegionID = session.regionID;
+  const oldGenderID = session.genderID ?? session.genderid ?? null;
+  const oldBloodlineID = session.bloodlineID ?? session.bloodlineid ?? null;
+  const oldRaceID = session.raceID ?? session.raceid ?? null;
+  const oldSchoolID = session.schoolID ?? session.schoolid ?? null;
   const oldShipID = normalizeSessionShipValue(
     session.shipID ?? session.shipid ?? null,
   );
   const oldHqID = session.hqID;
   const oldBaseID = session.baseID;
   const oldWarFactionID = session.warFactionID;
-
+  const oldCorpRole = session.corprole ?? null;
+  const oldRolesAtAll = session.rolesAtAll ?? null;
+  const oldRolesAtBase = session.rolesAtBase ?? null;
+  const oldRolesAtHQ = session.rolesAtHQ ?? null;
+  const oldRolesAtOther = session.rolesAtOther ?? null;
   const stationID = charData.stationID || 60003760;
   const solarSystemID = charData.solarSystemID || 30000142;
-  const shipID = charData.shipID || Number(charId) + 100;
-  const shipTypeID =
-    Number.isInteger(charData.shipTypeID) && charData.shipTypeID > 0
-      ? charData.shipTypeID
-      : 601;
+  const shipID = activeShip.itemID || charData.shipID || Number(charId) + 100;
+  const shipTypeID = activeShip.typeID || charData.shipTypeID || 601;
   const shipMetadata = resolveShipByTypeID(shipTypeID);
 
   session.characterID = charId;
+  session.charid = charId;
   session.characterName = charData.characterName || "Unknown";
   session.characterTypeID = charData.typeID || 1373;
+  session.genderID = charData.gender || 1;
+  session.genderid = session.genderID;
+  session.bloodlineID = charData.bloodlineID || 1;
+  session.bloodlineid = session.bloodlineID;
+  session.raceID = charData.raceID || 1;
+  session.raceid = session.raceID;
+  session.schoolID = charData.schoolID || charData.corporationID || null;
+  session.schoolid = session.schoolID;
   session.corporationID = charData.corporationID || 1000009;
-  session.allianceID = charData.allianceID || 0;
+  session.corpid = session.corporationID;
+  session.allianceID = charData.allianceID || null;
+  session.allianceid = session.allianceID || null;
   session.stationid = stationID;
   session.stationID = stationID;
   session.stationid2 = stationID;
-  session.worldspaceid = stationID;
+  session.worldspaceid = null;
   session.locationid = stationID;
   session.solarsystemid2 = solarSystemID;
-  session.solarsystemid = undefined;
+  session.solarsystemid = solarSystemID;
   session.constellationID = charData.constellationID || 20000020;
+  session.constellationid = session.constellationID;
   session.regionID = charData.regionID || 10000002;
+  session.regionid = session.regionID;
   session.activeShipID = shipID;
   session.shipID = shipID;
   session.shipid = shipID;
   session.shipTypeID = shipTypeID;
   session.shipName =
-    (shipMetadata && shipMetadata.name) || charData.shipName || "Ship";
-  session.hqID = charData.hqID || 0;
-  session.baseID = charData.baseID || 0;
-  session.warFactionID = charData.warFactionID || 0;
+    (shipMetadata && shipMetadata.name) ||
+    activeShip.itemName ||
+    charData.shipName ||
+    "Ship";
+  session.skillPoints = charData.skillPoints || 0;
+  session.hqID = charData.hqID || null;
+  session.baseID = charData.baseID || null;
+  session.warFactionID = charData.warFactionID || null;
+  session.warfactionid = session.warFactionID || null;
+  session.corprole = 0n;
+  session.rolesAtAll = 0n;
+  session.rolesAtBase = 0n;
+  session.rolesAtHQ = 0n;
+  session.rolesAtOther = 0n;
 
   if (options.emitNotifications !== false) {
-    session.sendNotification("OnCharacterSelected", "clientID", []);
-    session.sendSessionChange({
-      charid: [oldCharID || null, charId],
-      corpid: [oldCorpID || null, session.corporationID],
-      allianceid: [oldAllianceID || null, session.allianceID || null],
-      stationid: [oldStationID || null, session.stationid],
-      stationid2: [oldStationID || null, session.stationid2],
-      worldspaceid: [null, session.worldspaceid],
-      locationid: [null, session.locationid],
-      solarsystemid2: [oldSolarSystemID || null, session.solarsystemid2],
-      constellationid: [oldConstellationID || null, session.constellationID],
-      regionid: [oldRegionID || null, session.regionID],
-      shipid: [
-        normalizeSessionShipValue(oldShipID),
-        normalizeSessionShipValue(session.shipID),
-      ],
-      corprole: [null, 0n],
-      rolesAtAll: [null, 0n],
-      rolesAtBase: [null, 0n],
-      rolesAtHQ: [null, 0n],
-      rolesAtOther: [null, 0n],
-      baseID: [oldBaseID || null, session.baseID || null],
-      hqID: [oldHqID || null, session.hqID || null],
-      warFactionID: [oldWarFactionID || null, session.warFactionID || null],
-    });
+    const isCharacterSelection =
+      options.selectionEvent !== false &&
+      (oldCharID === undefined || oldCharID === null || oldCharID !== charId);
+    if (isCharacterSelection) {
+      session.sendNotification("OnCharacterSelected", "clientID", []);
+    }
+
+    const sessionChanges = {};
+    appendSessionChange(sessionChanges, "charid", oldCharID || null, charId);
+    appendSessionChange(
+      sessionChanges,
+      "corpid",
+      oldCorpID || null,
+      session.corporationID,
+    );
+    appendSessionChange(
+      sessionChanges,
+      "allianceid",
+      oldAllianceID || null,
+      session.allianceID || null,
+    );
+    appendSessionChange(sessionChanges, "genderID", oldGenderID, session.genderID);
+    appendSessionChange(
+      sessionChanges,
+      "bloodlineID",
+      oldBloodlineID,
+      session.bloodlineID,
+    );
+    appendSessionChange(sessionChanges, "raceID", oldRaceID, session.raceID);
+    appendSessionChange(sessionChanges, "schoolID", oldSchoolID, session.schoolID);
+    appendSessionChange(
+      sessionChanges,
+      "stationid",
+      oldStationID || null,
+      session.stationid,
+    );
+    appendSessionChange(
+      sessionChanges,
+      "solarsystemid2",
+      oldSolarSystemID || null,
+      session.solarsystemid2,
+    );
+    appendSessionChange(
+      sessionChanges,
+      "constellationid",
+      oldConstellationID || null,
+      session.constellationID,
+    );
+    appendSessionChange(
+      sessionChanges,
+      "regionid",
+      oldRegionID || null,
+      session.regionID,
+    );
+    appendSessionChange(
+      sessionChanges,
+      "shipid",
+      normalizeSessionShipValue(oldShipID),
+      normalizeSessionShipValue(session.shipID),
+    );
+    if (isCharacterSelection) {
+      appendSessionChange(
+        sessionChanges,
+        "corprole",
+        oldCorpRole,
+        session.corprole,
+      );
+      appendSessionChange(
+        sessionChanges,
+        "rolesAtAll",
+        oldRolesAtAll,
+        session.rolesAtAll,
+      );
+      appendSessionChange(
+        sessionChanges,
+        "rolesAtBase",
+        oldRolesAtBase,
+        session.rolesAtBase,
+      );
+      appendSessionChange(
+        sessionChanges,
+        "rolesAtHQ",
+        oldRolesAtHQ,
+        session.rolesAtHQ,
+      );
+      appendSessionChange(
+        sessionChanges,
+        "rolesAtOther",
+        oldRolesAtOther,
+        session.rolesAtOther,
+      );
+    }
+
+    if (Object.keys(sessionChanges).length > 0) {
+      session.sendSessionChange(sessionChanges);
+    }
   }
 
   if (options.logSelection !== false) {
@@ -218,7 +484,7 @@ function applyCharacterToSession(session, charId, options = {}) {
   };
 }
 
-function setActiveShipForSession(session, shipType) {
+function activateShipForSession(session, shipId, options = {}) {
   if (!session || !session.characterID) {
     return {
       success: false,
@@ -235,49 +501,82 @@ function setActiveShipForSession(session, shipType) {
   }
 
   const charId = session.characterID;
-  const currentRecord = getCharacterRecord(charId);
-  if (currentRecord && currentRecord.shipTypeID === shipType.typeID) {
-    const refreshResult = applyCharacterToSession(session, charId, {
-      emitNotifications: true,
-      logSelection: true,
-    });
-
+  const currentShip = getActiveShipRecord(charId);
+  const targetShip = findCharacterShip(charId, shipId);
+  if (!targetShip) {
     return {
-      ...refreshResult,
-      changed: false,
+      success: false,
+      errorMsg: "SHIP_NOT_FOUND",
     };
   }
 
-  const updateResult = updateCharacterRecord(charId, (existing) => ({
-    ...existing,
-    shipTypeID: shipType.typeID,
-    shipName: shipType.name,
-    shipID: nextShipId(charId, existing.shipID),
-  }));
-
+  const updateResult = setActiveShipForCharacter(charId, targetShip.itemID);
   if (!updateResult.success) {
     return updateResult;
   }
 
   const applyResult = applyCharacterToSession(session, charId, {
-    emitNotifications: true,
-    logSelection: true,
+    emitNotifications: options.emitNotifications !== false,
+    logSelection: options.logSelection !== false,
+    selectionEvent: false,
   });
 
   return {
     ...applyResult,
-    changed: true,
+    changed: !currentShip || currentShip.itemID !== targetShip.itemID,
+    activeShip: targetShip,
   };
 }
 
+function spawnShipInHangarForSession(session, shipType) {
+  if (!session || !session.characterID) {
+    return {
+      success: false,
+      errorMsg: "CHARACTER_NOT_SELECTED",
+    };
+  }
+
+  const docked = Boolean(session.stationid || session.stationID);
+  if (!docked) {
+    return {
+      success: false,
+      errorMsg: "DOCK_REQUIRED",
+    };
+  }
+
+  const charId = session.characterID;
+  const stationId = session.stationid || session.stationID || 60003760;
+  const spawnResult = spawnShipInStationHangar(charId, stationId, shipType);
+  if (!spawnResult.success) {
+    return spawnResult;
+  }
+
+  const charData = getCharacterRecord(charId);
+  sendShipInventorySync(session, charData);
+
+  return {
+    success: true,
+    created: spawnResult.created,
+    ship: spawnResult.data,
+  };
+}
+
+function setActiveShipForSession(session, shipType) {
+  return spawnShipInHangarForSession(session, shipType);
+}
+
 module.exports = {
-  LEGACY_DB_PATH,
-  SPLIT_DB_CHARACTERS_PATH,
-  readLegacyDb,
-  writeLegacyDb,
+  CHARACTERS_TABLE,
   getCharacterRecord,
   updateCharacterRecord,
+  getCharacterShips,
+  findCharacterShip,
+  getActiveShipRecord,
   applyCharacterToSession,
+  activateShipForSession,
+  spawnShipInHangarForSession,
   setActiveShipForSession,
   toBigInt,
+  deriveEmpireID,
+  deriveFactionID,
 };

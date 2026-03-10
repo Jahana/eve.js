@@ -1,6 +1,68 @@
 const BaseService = require("../baseService");
 const path = require("path");
 const log = require("../../utils/logger");
+const { buildList } = require(path.join(
+  __dirname,
+  "../_shared/serviceHelpers",
+));
+
+function resolveCorporationID(session) {
+  return (
+    (session && (session.corporationID || session.corpid)) ||
+    1000044
+  );
+}
+
+function resolveCEOID(session) {
+  return (
+    (session && (session.characterID || session.charid)) ||
+    null
+  );
+}
+
+function buildCorporationKeyVal(session) {
+  const corporationID = resolveCorporationID(session);
+  const ceoID = resolveCEOID(session);
+  const row = [
+    corporationID,
+    "Your Corp Name",
+    "TICKR",
+    ceoID,
+    1,
+  ];
+
+  return {
+    type: "object",
+    name: "util.KeyVal",
+    args: {
+      type: "dict",
+      entries: [
+        ["corporationID", corporationID],
+        ["corporationName", "Your Corp Name"],
+        ["ticker", "TICKR"],
+        ["ceoID", ceoID],
+        ["membership", 1],
+        [
+          "header",
+          [
+            "corporationID",
+            "corporationName",
+            "ticker",
+            "ceoID",
+            "membership",
+          ],
+        ],
+        ["row", row],
+        ["line", row],
+        ["description", "A custom corporation."],
+        ["url", "http://localhost"],
+        ["taxRate", 0.0],
+        ["memberCount", 1],
+        ["shares", 1000],
+      ],
+    },
+  };
+}
 
 // Static counter for generating unique bound object IDs
 
@@ -80,45 +142,7 @@ class CorpRegistryService extends BaseService {
 
   Handle_GetCorporation(args, session) {
     log.debug("[CorpRegistry] GetCorporation called");
-    return {
-      type: "object",
-      name: "util.KeyVal",
-      args: {
-        type: "dict",
-        entries: [
-          ["corporationID", session.corpid],
-          [
-            "header",
-            {
-              type: "list",
-              items: [
-                "corporationID",
-                "corporationName",
-                "ticker",
-                "ceoID",
-                "membership",
-              ],
-            },
-          ],
-          [
-            "row",
-            [
-              session.corpid,
-              "Your Corp Name", // Replace with your desired name
-              "TICKR", // Replace with your desired ticker
-              session.charid, // Setting you as the CEO to satisfy the menu check
-              1, // Membership count
-            ],
-          ],
-          // These additional fields are often checked by bco_corporations.py
-          ["description", "A custom corporation."],
-          ["url", "http://localhost"],
-          ["taxRate", 0.0],
-          ["memberCount", 1],
-          ["shares", 1000],
-        ],
-      },
-    };
+    return buildCorporationKeyVal(session);
   }
 
   Handle_GetMyApplications(args, session) {

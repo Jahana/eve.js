@@ -15,8 +15,8 @@ class SubscriptionMgrService extends BaseService {
   }
 
   _resolveCloneGrade() {
-    // Modern clients expect a clone state enum, not invType IDs (164/300).
-    // 2 is commonly Omega, 1 is Alpha.
+    // This client build accepts 1 cleanly here. Returning 2 causes
+    // "Unknown Clone Grade 2" in clone_grade_svc during ship row render.
     const raw = process.env.EVE_CLONE_GRADE;
     if (!raw) return 1;
 

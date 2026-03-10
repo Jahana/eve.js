@@ -15,7 +15,10 @@ class BookmarkService extends BaseService {
 
   Handle_GetBookmarks(args, session) {
     log.debug("[BookmarkMgr] GetBookmarks");
-    return { type: "dict", entries: [] };
+    return [
+      { type: "list", items: [] },
+      { type: "list", items: [] },
+    ];
   }
 
   Handle_CreateFolder(args, session) {
@@ -25,7 +28,19 @@ class BookmarkService extends BaseService {
 
   Handle_GetFolders(args, session) {
     log.debug("[BookmarkMgr] GetFolders");
-    return { type: "dict", entries: [] };
+    return {
+      type: "list",
+      items: [],
+    };
+  }
+
+  Handle_GetBookmarksInFolder(args, session) {
+    const folderID = args && args.length > 0 ? args[0] : 0;
+    log.debug(`[BookmarkMgr] GetBookmarksInFolder(${folderID})`);
+    return {
+      type: "list",
+      items: [],
+    };
   }
 }
 

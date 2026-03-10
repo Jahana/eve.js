@@ -1,6 +1,6 @@
 /**
  * HANDSHAKE CONTROLLER
- * (made with AI, revised by Icey and John)
+ * (made with AI, revised by Icey)
  * 
  * only supports PLACEBO packets
  *

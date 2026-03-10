@@ -8,6 +8,7 @@
  *   userid, characterID, corporationID, stationID, solarsystemid, role, etc.
  */
 
+const fs = require("fs");
 const path = require("path");
 const log = require(path.join(__dirname, "../utils/logger"));
 const { marshalEncode, marshalDecode, encodePacket } = require(
@@ -20,6 +21,44 @@ const { encodeAddress } = require(
   path.join(__dirname, "../common/machoAddress"),
 );
 const config = require(path.join(__dirname, "../config"));
+const sessionChangeDebugPath = path.join(
+  __dirname,
+  "../../logs/session-change-debug.log",
+);
+const SESSION_CHANGE_ALLOWED_KEYS = new Set([
+  "charid",
+  "corpid",
+  "allianceid",
+  "genderID",
+  "bloodlineID",
+  "raceID",
+  "schoolID",
+  "stationid",
+  "solarsystemid2",
+  "constellationid",
+  "regionid",
+  "shipid",
+  "corprole",
+  "rolesAtAll",
+  "rolesAtBase",
+  "rolesAtHQ",
+  "rolesAtOther",
+]);
+
+function appendSessionChangeDebug(entry) {
+  try {
+    fs.mkdirSync(path.dirname(sessionChangeDebugPath), { recursive: true });
+    fs.appendFileSync(
+      sessionChangeDebugPath,
+      `[${new Date().toISOString()}] ${entry}\n`,
+      "utf8",
+    );
+  } catch (error) {
+    log.warn(
+      `[Session] Failed to write session change debug log: ${error.message}`,
+    );
+  }
+}
 
 class ClientSession {
   /**
@@ -39,6 +78,12 @@ class ClientSession {
     this.characterID = 0;
     this.characterName = "";
     this.characterTypeID = 1373;
+    this.genderID = 1;
+    this.bloodlineID = 1;
+    this.raceID = 1;
+    this.empireID = null;
+    this.factionID = null;
+    this.schoolID = null;
     this.corporationID = 0;
     this.allianceID = 0;
     this.stationID = 0;
@@ -47,6 +92,7 @@ class ClientSession {
     this.regionID = 0;
     this.shipID = 0;
     this.shipName = "";
+    this.cloneStationID = 0;
     this.hqID = 0;
     this.baseID = 0;
     this.warFactionID = 0;
@@ -131,8 +177,17 @@ class ClientSession {
     // Build the session change dict — each entry is [oldValue, newValue]
     const changeEntries = [];
     for (const [key, [oldVal, newVal]] of Object.entries(changes)) {
+      if (!SESSION_CHANGE_ALLOWED_KEYS.has(key)) {
+        appendSessionChangeDebug(
+          `drop key=${key} old=${JSON.stringify(oldVal, (k, v) => (typeof v === "bigint" ? v.toString() : v))} new=${JSON.stringify(newVal, (k, v) => (typeof v === "bigint" ? v.toString() : v))}`,
+        );
+        continue;
+      }
       changeEntries.push([key, [oldVal, newVal]]);
     }
+    appendSessionChangeDebug(
+      `send keys=${JSON.stringify(changeEntries.map(([key]) => key))} payload=${JSON.stringify(changeEntries, (k, v) => (typeof v === "bigint" ? v.toString() : v))}`,
+    );
 
     // SessionChangeNotification payload per General.xmlp:
     //   tuple(sessionID: long, tuple(clueless: int, changes: dict), nodesOfInterest: listInt)

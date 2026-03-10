@@ -1,10 +1,191 @@
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
+const {
+  activateShipForSession,
+  findCharacterShip,
+  getActiveShipRecord,
+} = require(path.join(__dirname, "../character/characterState"));
+const {
+  ensureCapsuleForCharacter,
+} = require(path.join(__dirname, "../inventory/itemStore"));
 
 class ShipService extends BaseService {
   constructor() {
     super("ship");
+    this._shipConfiguration = new Map();
+  }
+
+  _getShipID(session) {
+    const activeShip =
+      session && session.characterID
+        ? getActiveShipRecord(session.characterID)
+        : null;
+    return (
+      (activeShip && (activeShip.itemID || activeShip.shipID)) ||
+      (session && (session.activeShipID || session.shipID || session.shipid)) ||
+      140000101
+    );
+  }
+
+  _extractShipId(rawValue) {
+    if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+      return Math.trunc(rawValue);
+    }
+
+    if (typeof rawValue === "bigint") {
+      return Number(rawValue);
+    }
+
+    if (typeof rawValue === "string" && rawValue.trim() !== "") {
+      return Number.parseInt(rawValue, 10);
+    }
+
+    if (Buffer.isBuffer(rawValue)) {
+      return Number.parseInt(rawValue.toString("utf8"), 10);
+    }
+
+    return 0;
+  }
+
+  _buildActivationResponse(activeShip, session) {
+    // V23.02 clientDogmaLocation._MakeShipActive unpacks:
+    //   instanceCache, instanceFlagQuantityCache, wbData, heatStates
+    // Returning the older 3-tuple crashes boarding/activation immediately.
+    return [
+      { type: "dict", entries: [] },
+      { type: "dict", entries: [] },
+      { type: "dict", entries: [] },
+      { type: "dict", entries: [] },
+    ];
+  }
+
+  _buildStatusRow({
+    itemID,
+    online = false,
+    damage = 0.0,
+    charge = 0.0,
+    skillPoints = 0,
+    armorDamage = 0.0,
+    shieldCharge = 0.0,
+    incapacitated = false,
+  }) {
+    return {
+      type: "object",
+      name: "util.Row",
+      args: {
+        type: "dict",
+        entries: [
+          [
+            "header",
+            [
+              "instanceID",
+              "online",
+              "damage",
+              "charge",
+              "skillPoints",
+              "armorDamage",
+              "shieldCharge",
+              "incapacitated",
+            ],
+          ],
+          [
+            "line",
+            [
+              itemID,
+              online,
+              damage,
+              charge,
+              skillPoints,
+              armorDamage,
+              shieldCharge,
+              incapacitated,
+            ],
+          ],
+        ],
+      },
+    };
+  }
+
+  _getShipConfiguration(shipID) {
+    const numericShipID = this._extractShipId(shipID);
+    if (!this._shipConfiguration.has(numericShipID)) {
+      this._shipConfiguration.set(numericShipID, {
+        allowFleetSMBUsage: false,
+        allowCorpSMBUsage: false,
+        SMB_AllowFleetAccess: false,
+        SMB_AllowCorpAccess: false,
+        FleetHangar_AllowFleetAccess: false,
+        FleetHangar_AllowCorpAccess: false,
+      });
+    }
+
+    return this._shipConfiguration.get(numericShipID);
+  }
+
+  _activateShipById(shipID, session, sourceLabel) {
+    if (!session) {
+      log.warn(`[Ship] ${sourceLabel} requested without a session`);
+      return null;
+    }
+
+    const numericShipID = this._extractShipId(shipID);
+    if (!Number.isInteger(numericShipID) || numericShipID <= 0) {
+      log.warn(`[Ship] ${sourceLabel} received invalid shipID=${String(shipID)}`);
+      return null;
+    }
+
+    const currentShip = getActiveShipRecord(session.characterID);
+    const requestedShip = findCharacterShip(session.characterID, numericShipID);
+
+    log.info(
+      `[Ship] ${sourceLabel} shipID=${numericShipID} current=${currentShip ? (currentShip.itemID || currentShip.shipID) : "none"} requested=${requestedShip ? `${requestedShip.shipName}(${requestedShip.shipTypeID})` : "unknown"}`,
+    );
+
+    const activationResult = activateShipForSession(session, numericShipID, {
+      emitNotifications: true,
+      logSelection: true,
+    });
+    if (!activationResult.success) {
+      log.warn(
+        `[Ship] ${sourceLabel} failed for shipID=${numericShipID}: ${activationResult.errorMsg}`,
+      );
+      return null;
+    }
+
+    const activeShip = activationResult.activeShip || getActiveShipRecord(session.characterID);
+    return this._buildActivationResponse(activeShip, session);
+  }
+
+  _leaveShip(session, shipID, sourceLabel) {
+    if (!session || !session.characterID) {
+      log.warn(`[Ship] ${sourceLabel} requested without a selected character`);
+      return null;
+    }
+
+    const stationID = session.stationid || session.stationID || 60003760;
+    const capsuleResult = ensureCapsuleForCharacter(session.characterID, stationID);
+    if (!capsuleResult.success || !capsuleResult.data) {
+      log.warn(`[Ship] ${sourceLabel} failed to ensure capsule`);
+      return null;
+    }
+
+    const activationResult = activateShipForSession(
+      session,
+      capsuleResult.data.itemID,
+      {
+        emitNotifications: true,
+        logSelection: true,
+      },
+    );
+    if (!activationResult.success) {
+      log.warn(
+        `[Ship] ${sourceLabel} failed to activate capsule: ${activationResult.errorMsg}`,
+      );
+      return null;
+    }
+
+    return capsuleResult.data.itemID;
   }
 
   Handle_GetDirtTimestamp(args, session, kwargs) {
@@ -50,9 +231,151 @@ class ShipService extends BaseService {
     return { type: "list", items: [] };
   }
 
+  Handle_ActivateShip(args, session, kwargs) {
+    const shipID = args && args.length > 0 ? args[0] : null;
+    const oldShipID = args && args.length > 1 ? args[1] : null;
+    log.info(
+      `[Ship] ActivateShip(shipID=${String(shipID)}, oldShipID=${String(oldShipID)})`,
+    );
+
+    return this._activateShipById(shipID, session, "ActivateShip");
+  }
+
+  Handle_LeaveShip(args, session, kwargs) {
+    const shipID = args && args.length > 0 ? args[0] : null;
+    log.info(`[Ship] LeaveShip(shipID=${String(shipID)})`);
+    return this._leaveShip(session, shipID, "LeaveShip");
+  }
+
+  Handle_BoardStoredShip(args, session, kwargs) {
+    const structureID = args && args.length > 0 ? args[0] : null;
+    const shipID = args && args.length > 1 ? args[1] : null;
+    log.info(
+      `[Ship] BoardStoredShip(structureID=${String(structureID)}, shipID=${String(shipID)})`,
+    );
+
+    return this._activateShipById(shipID, session, "BoardStoredShip");
+  }
+
+  Handle_Board(args, session, kwargs) {
+    const shipID = args && args.length > 0 ? args[0] : null;
+    const oldShipID = args && args.length > 1 ? args[1] : null;
+    log.info(
+      `[Ship] Board(shipID=${String(shipID)}, oldShipID=${String(oldShipID)})`,
+    );
+
+    return this._activateShipById(shipID, session, "Board");
+  }
+
+  Handle_Eject(args, session, kwargs) {
+    log.info("[Ship] Eject()");
+    return this._leaveShip(session, null, "Eject");
+  }
+
   Handle_GetTurretModules(args, session, kwargs) {
     log.debug("[Ship] GetTurretModules");
     return { type: "list", items: [] };
+  }
+
+  Handle_GetShipConfiguration(args, session, kwargs) {
+    const shipID =
+      args && args.length > 0 ? args[0] : this._getShipID(session);
+    log.debug(`[Ship] GetShipConfiguration(shipID=${String(shipID)})`);
+    const configuration = this._getShipConfiguration(shipID);
+    const allowFleetAccess = Boolean(
+      configuration.SMB_AllowFleetAccess ?? configuration.allowFleetSMBUsage,
+    );
+    const allowCorpAccess = Boolean(
+      configuration.SMB_AllowCorpAccess ?? configuration.allowCorpSMBUsage,
+    );
+    configuration.allowFleetSMBUsage = allowFleetAccess;
+    configuration.SMB_AllowFleetAccess = allowFleetAccess;
+    configuration.allowCorpSMBUsage = allowCorpAccess;
+    configuration.SMB_AllowCorpAccess = allowCorpAccess;
+    configuration.FleetHangar_AllowFleetAccess = allowFleetAccess;
+    configuration.FleetHangar_AllowCorpAccess = allowCorpAccess;
+    return {
+      type: "dict",
+      entries: [
+        ["allowFleetSMBUsage", allowFleetAccess],
+        ["SMB_AllowFleetAccess", allowFleetAccess],
+        ["allowCorpSMBUsage", allowCorpAccess],
+        ["SMB_AllowCorpAccess", allowCorpAccess],
+        ["FleetHangar_AllowFleetAccess", allowFleetAccess],
+        ["FleetHangar_AllowCorpAccess", allowCorpAccess],
+      ],
+    };
+  }
+
+  Handle_ConfigureShip(args, session, kwargs) {
+    const configPayload =
+      args && args.length > 0 && args[0] && typeof args[0] === "object"
+        ? args[0]
+        : null;
+    const shipID = this._getShipID(session);
+    const configuration = this._getShipConfiguration(shipID);
+
+    if (configPayload && configPayload.type === "dict" && Array.isArray(configPayload.entries)) {
+      for (const [key, value] of configPayload.entries) {
+        if (
+          key === "allowFleetSMBUsage" ||
+          key === "SMB_AllowFleetAccess" ||
+          key === "FleetHangar_AllowFleetAccess"
+        ) {
+          const normalizedValue = Boolean(value);
+          configuration.allowFleetSMBUsage = normalizedValue;
+          configuration.SMB_AllowFleetAccess = normalizedValue;
+          configuration.FleetHangar_AllowFleetAccess = normalizedValue;
+        } else if (
+          key === "allowCorpSMBUsage" ||
+          key === "SMB_AllowCorpAccess" ||
+          key === "FleetHangar_AllowCorpAccess"
+        ) {
+          const normalizedValue = Boolean(value);
+          configuration.allowCorpSMBUsage = normalizedValue;
+          configuration.SMB_AllowCorpAccess = normalizedValue;
+          configuration.FleetHangar_AllowCorpAccess = normalizedValue;
+        }
+      }
+    } else if (configPayload && typeof configPayload === "object") {
+      if (
+        Object.prototype.hasOwnProperty.call(configPayload, "allowFleetSMBUsage") ||
+        Object.prototype.hasOwnProperty.call(configPayload, "SMB_AllowFleetAccess") ||
+        Object.prototype.hasOwnProperty.call(configPayload, "FleetHangar_AllowFleetAccess")
+      ) {
+        const normalizedValue = Boolean(
+          Object.prototype.hasOwnProperty.call(configPayload, "FleetHangar_AllowFleetAccess")
+            ? configPayload.FleetHangar_AllowFleetAccess
+            : Object.prototype.hasOwnProperty.call(configPayload, "SMB_AllowFleetAccess")
+            ? configPayload.SMB_AllowFleetAccess
+            : configPayload.allowFleetSMBUsage,
+        );
+        configuration.allowFleetSMBUsage = normalizedValue;
+        configuration.SMB_AllowFleetAccess = normalizedValue;
+        configuration.FleetHangar_AllowFleetAccess = normalizedValue;
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(configPayload, "allowCorpSMBUsage") ||
+        Object.prototype.hasOwnProperty.call(configPayload, "SMB_AllowCorpAccess") ||
+        Object.prototype.hasOwnProperty.call(configPayload, "FleetHangar_AllowCorpAccess")
+      ) {
+        const normalizedValue = Boolean(
+          Object.prototype.hasOwnProperty.call(configPayload, "FleetHangar_AllowCorpAccess")
+            ? configPayload.FleetHangar_AllowCorpAccess
+            : Object.prototype.hasOwnProperty.call(configPayload, "SMB_AllowCorpAccess")
+            ? configPayload.SMB_AllowCorpAccess
+            : configPayload.allowCorpSMBUsage,
+        );
+        configuration.allowCorpSMBUsage = normalizedValue;
+        configuration.SMB_AllowCorpAccess = normalizedValue;
+        configuration.FleetHangar_AllowCorpAccess = normalizedValue;
+      }
+    }
+
+    log.debug(
+      `[Ship] ConfigureShip(shipID=${String(shipID)} allowFleetSMBUsage=${configuration.allowFleetSMBUsage} SMB_AllowFleetAccess=${configuration.SMB_AllowFleetAccess} FleetHangar_AllowFleetAccess=${configuration.FleetHangar_AllowFleetAccess} allowCorpSMBUsage=${configuration.allowCorpSMBUsage} SMB_AllowCorpAccess=${configuration.SMB_AllowCorpAccess} FleetHangar_AllowCorpAccess=${configuration.FleetHangar_AllowCorpAccess})`,
+    );
+    return null;
   }
 
   Handle_MachoResolveObject(args, session, kwargs) {

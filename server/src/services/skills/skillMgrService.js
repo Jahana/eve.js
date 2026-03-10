@@ -7,25 +7,123 @@
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
+const { getCharacterRecord } = require(path.join(
+  __dirname,
+  "../character/characterState",
+));
+const {
+  getCharacterSkillPointTotal,
+  getCharacterSkills,
+} = require(path.join(__dirname, "./skillState"));
+
+const ATTRIBUTE_CHARISMA = 164;
+const ATTRIBUTE_INTELLIGENCE = 165;
+const ATTRIBUTE_MEMORY = 166;
+const ATTRIBUTE_PERCEPTION = 167;
+const ATTRIBUTE_WILLPOWER = 168;
+
+function buildKeyVal(entries) {
+  return {
+    type: "object",
+    name: "util.KeyVal",
+    args: {
+      type: "dict",
+      entries,
+    },
+  };
+}
 
 class SkillMgrService extends BaseService {
   constructor() {
     super("skillMgr");
   }
 
+  _getCharacterId(session) {
+    return (
+      (session && (session.characterID || session.charid || session.userid)) ||
+      140000001
+    );
+  }
+
+  _buildSkillInfo(skillRecord) {
+    return buildKeyVal([
+      ["itemID", skillRecord.itemID],
+      ["typeID", skillRecord.typeID],
+      ["ownerID", skillRecord.ownerID],
+      ["locationID", skillRecord.locationID],
+      ["flagID", skillRecord.flagID],
+      ["groupID", skillRecord.groupID],
+      ["groupName", skillRecord.groupName || ""],
+      ["skillLevel", skillRecord.skillLevel],
+      ["trainedSkillLevel", skillRecord.trainedSkillLevel],
+      ["effectiveSkillLevel", skillRecord.effectiveSkillLevel],
+      ["virtualSkillLevel", skillRecord.virtualSkillLevel ?? null],
+      ["skillRank", skillRecord.skillRank || 1],
+      ["skillPoints", skillRecord.skillPoints],
+      ["trainedSkillPoints", skillRecord.trainedSkillPoints ?? skillRecord.skillPoints],
+      ["published", Boolean(skillRecord.published)],
+      ["inTraining", Boolean(skillRecord.inTraining)],
+    ]);
+  }
+
+  _buildSkillsDict(session) {
+    const skills = getCharacterSkills(this._getCharacterId(session));
+    return {
+      type: "dict",
+      entries: skills.map((skillRecord) => [
+        skillRecord.typeID,
+        this._buildSkillInfo(skillRecord),
+      ]),
+    };
+  }
+
+  _buildSkillQueue() {
+    return { type: "list", items: [] };
+  }
+
+  _buildEmptyDict() {
+    return { type: "dict", entries: [] };
+  }
+
+  _buildCharacterAttributes(session) {
+    const charData = getCharacterRecord(this._getCharacterId(session)) || {};
+    const source = charData.characterAttributes || {};
+    return {
+      type: "dict",
+      entries: [
+        [ATTRIBUTE_CHARISMA, Number(source[ATTRIBUTE_CHARISMA] ?? source.charisma ?? 20)],
+        [
+          ATTRIBUTE_INTELLIGENCE,
+          Number(source[ATTRIBUTE_INTELLIGENCE] ?? source.intelligence ?? 20),
+        ],
+        [ATTRIBUTE_MEMORY, Number(source[ATTRIBUTE_MEMORY] ?? source.memory ?? 20)],
+        [
+          ATTRIBUTE_PERCEPTION,
+          Number(source[ATTRIBUTE_PERCEPTION] ?? source.perception ?? 20),
+        ],
+        [ATTRIBUTE_WILLPOWER, Number(source[ATTRIBUTE_WILLPOWER] ?? source.willpower ?? 20)],
+      ],
+    };
+  }
+
   Handle_GetMySkillQueue(args, session) {
     log.debug("[SkillMgr] GetMySkillQueue");
-    return { type: "list", items: [] };
+    return this._buildSkillQueue();
   }
 
   Handle_GetMySkillInfo(args, session) {
     log.debug("[SkillMgr] GetMySkillInfo");
-    return { type: "dict", entries: [] };
+    return buildKeyVal([
+      ["skills", this._buildSkillsDict(session)],
+      ["skillPoints", getCharacterSkillPointTotal(this._getCharacterId(session)) || 0],
+      ["freeSkillPoints", 0],
+      ["queue", this._buildSkillQueue()],
+    ]);
   }
 
   Handle_GetSkillQueue(args, session) {
     log.debug("[SkillMgr] GetSkillQueue");
-    return { type: "list", items: [] };
+    return this._buildSkillQueue();
   }
 
   Handle_GetSkillHistory(args, session) {
@@ -33,19 +131,29 @@ class SkillMgrService extends BaseService {
     return { type: "list", items: [] };
   }
 
-  _buildSkillsDict() {
-    // Must be dict-like: client does .get(skillTypeID)
-    return { type: "dict", entries: [] };
+  Handle_GetSkillPoints(args, session) {
+    log.debug("[SkillMgr] GetSkillPoints");
+    return getCharacterSkillPointTotal(this._getCharacterId(session)) || 0;
+  }
+
+  Handle_GetCharacterAttributeModifiers(args, session) {
+    log.debug("[SkillMgr] GetCharacterAttributeModifiers");
+    return { type: "list", items: [] };
+  }
+
+  Handle_GetAttributes(args, session) {
+    log.debug("[SkillMgr] GetAttributes");
+    return this._buildCharacterAttributes(session);
   }
 
   Handle_GetSkills(args, session) {
     log.debug("[SkillMgr] GetSkills");
-    return this._buildSkillsDict();
+    return this._buildSkillsDict(session);
   }
 
   Handle_GetAllSkills(args, session) {
     log.debug("[SkillMgr] GetAllSkills");
-    return this._buildSkillsDict();
+    return this._buildSkillsDict(session);
   }
 
   Handle_CharStartTrainingSkillByTypeID(args, session) {
@@ -76,12 +184,57 @@ class SkillMgrService extends BaseService {
 
   Handle_GetSkillQueueAndFreePoints(args, session) {
     log.debug("[SkillMgr] GetSkillQueueAndFreePoints called");
-    return [{ type: "list", items: [] }, 0];
+    return [this._buildSkillQueue(), 0];
   }
 
   Handle_GetBoosters(args, session) {
     log.debug("[SkillMgr] GetBoosters called");
-    return { type: "list", items: [] };
+    return this._buildEmptyDict();
+  }
+
+  Handle_GetImplants(args, session) {
+    log.debug("[SkillMgr] GetImplants called");
+    return this._buildEmptyDict();
+  }
+
+  Handle_GetFreeSkillPoints(args, session) {
+    log.debug("[SkillMgr] GetFreeSkillPoints called");
+    return 0;
+  }
+
+  Handle_GetFreeSkillPointsAppliedToQueue(args, session) {
+    log.debug("[SkillMgr] GetFreeSkillPointsAppliedToQueue called");
+    return this._buildEmptyDict();
+  }
+
+  Handle_GetFreeSkillPointsAppliedToSkills(args, session) {
+    log.debug("[SkillMgr] GetFreeSkillPointsAppliedToSkills called");
+    return this._buildEmptyDict();
+  }
+
+  Handle_ApplyFreeSkillPointsToQueue(args, session) {
+    log.debug("[SkillMgr] ApplyFreeSkillPointsToQueue called");
+    return 0;
+  }
+
+  Handle_ApplyFreeSkillPointsToSkills(args, session) {
+    log.debug("[SkillMgr] ApplyFreeSkillPointsToSkills called");
+    return 0;
+  }
+
+  Handle_ApplyFreeSkillPoints(args, session) {
+    log.debug("[SkillMgr] ApplyFreeSkillPoints called");
+    return 0;
+  }
+
+  Handle_SaveNewQueue(args, session) {
+    log.debug("[SkillMgr] SaveNewQueue called");
+    return null;
+  }
+
+  Handle_AbortTraining(args, session) {
+    log.debug("[SkillMgr] AbortTraining called");
+    return null;
   }
 
   Handle_CheckAndSendNotifications(args, session) {

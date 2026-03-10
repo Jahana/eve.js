@@ -9,7 +9,7 @@ const { getCharacterRecord, toBigInt } = require(path.join(
   __dirname,
   "../character/characterState",
 ));
-const { executeChatCommand } = require(path.join(
+const { executeChatCommand, DEFAULT_MOTD_MESSAGE } = require(path.join(
   __dirname,
   "./chatCommands",
 ));
@@ -275,7 +275,8 @@ function getUserDataForCharacterId(charId) {
     characterName: charData.characterName || String(charId),
     corporationID: Number(charData.corporationID || 1000044),
     allianceID: Number(charData.allianceID || 0),
-    warFactionID: Number(charData.warFactionID || charData.factionID || 0),
+    // warFactionID means militia enlistment, not the character's empire faction.
+    warFactionID: Number(charData.warFactionID || 0),
     typeID: Number(charData.typeID || 1373),
     role: toBigInt(session ? session.role || 0 : 0),
     info: buildOwnerInfo(charData, charId),
@@ -398,21 +399,18 @@ function sendSessionSystemMessage(session, message, roomJid = null) {
 }
 
 function buildLocalWelcomeMessage() {
-  return [
-    "Welcome to EvEJS.",
-    "This emulator build is still work in progress.",
-    "Local chat and slash commands are enabled.",
-    "Use /help to see the current command list.",
-  ].join(" ");
+  return DEFAULT_MOTD_MESSAGE;
 }
 
 function handleJoinPresence(client, xml) {
   const to = extractAttr(xml, "to");
   const requestId = extractId(xml);
   if (!to) {
+    // The client expects an acknowledgement presence here before it proceeds
+    // into the actual room joins for Local and Corp.
     sendXml(
       client,
-      `<presence from='localhost' to='${escapeXml(client.boundJid)}'/>`,
+      `<presence from='${escapeXml(client.boundJid)}' to='${escapeXml(client.boundJid)}'/>`,
     );
     return;
   }

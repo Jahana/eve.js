@@ -64,6 +64,26 @@ const MARSHAL_HEADER = 0x7e;
 const SAVE_MASK = 0x40;
 const OPCODE_MASK = 0x3f;
 const UNKNOWN_MASK = 0x80;
+const DBTYPE = {
+  EMPTY: 0x00,
+  I2: 0x02,
+  I4: 0x03,
+  R4: 0x04,
+  R8: 0x05,
+  CY: 0x06,
+  ERROR: 0x0a,
+  BOOL: 0x0b,
+  I1: 0x10,
+  UI1: 0x11,
+  UI2: 0x12,
+  UI4: 0x13,
+  I8: 0x14,
+  UI8: 0x15,
+  FILETIME: 0x40,
+  BYTES: 0x80,
+  STR: 0x81,
+  WSTR: 0x82,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ENCODER
@@ -208,6 +228,9 @@ function encodeValue(value, chunks) {
         return;
       case "object":
         encodeObject(value, chunks);
+        return;
+      case "packedrow":
+        encodePackedRow(value, chunks);
         return;
       case "substruct":
         chunks.push(Buffer.from([Op.PySubStruct]));
@@ -381,6 +404,284 @@ function encodeObject(obj, chunks) {
   encodeValue(obj.name, chunks);
   // Args
   encodeValue(obj.args, chunks);
+}
+
+function getDbTypeSizeBits(type) {
+  switch (type) {
+    case DBTYPE.CY:
+    case DBTYPE.I8:
+    case DBTYPE.UI8:
+    case DBTYPE.FILETIME:
+      return 64;
+    case DBTYPE.I4:
+    case DBTYPE.UI4:
+    case DBTYPE.R4:
+      return 32;
+    case DBTYPE.R8:
+      return 64;
+    case DBTYPE.I2:
+    case DBTYPE.UI2:
+      return 16;
+    case DBTYPE.I1:
+    case DBTYPE.UI1:
+      return 8;
+    case DBTYPE.BOOL:
+      return 1;
+    case DBTYPE.BYTES:
+    case DBTYPE.STR:
+    case DBTYPE.WSTR:
+    case DBTYPE.EMPTY:
+    case DBTYPE.ERROR:
+    default:
+      return 0;
+  }
+}
+
+function normalizePackedRowColumns(packedRow) {
+  if (Array.isArray(packedRow.columns)) {
+    return packedRow.columns;
+  }
+
+  const header = packedRow.header;
+  if (
+    header &&
+    header.type &&
+    (header.type === "objectex1" || header.type === "objectex2") &&
+    Array.isArray(header.header) &&
+    header.header.length >= 2 &&
+    Array.isArray(header.header[1]) &&
+    header.header[1].length >= 1 &&
+    Array.isArray(header.header[1][0])
+  ) {
+    return header.header[1][0];
+  }
+
+  throw new Error("Packed row is missing DBRowDescriptor columns");
+}
+
+function normalizePackedRowValueMap(packedRow, columns) {
+  if (Array.isArray(packedRow.values)) {
+    if (packedRow.values.length !== columns.length) {
+      throw new Error(
+        `Packed row values length ${packedRow.values.length} does not match column count ${columns.length}`,
+      );
+    }
+    return packedRow.values;
+  }
+
+  if (packedRow.fields && typeof packedRow.fields === "object") {
+    return columns.map(([name]) =>
+      Object.prototype.hasOwnProperty.call(packedRow.fields, name)
+        ? packedRow.fields[name]
+        : null,
+    );
+  }
+
+  throw new Error("Packed row is missing values or fields");
+}
+
+function encodePackedNumericValue(type, value) {
+  switch (type) {
+    case DBTYPE.CY:
+    case DBTYPE.I8:
+    case DBTYPE.UI8:
+    case DBTYPE.FILETIME: {
+      const buf = Buffer.alloc(8);
+      const bigValue =
+        typeof value === "bigint"
+          ? value
+          : value === null || value === undefined
+            ? 0n
+            : BigInt(Math.trunc(Number(value)));
+      buf.writeBigInt64LE(bigValue, 0);
+      return buf;
+    }
+    case DBTYPE.I4:
+    case DBTYPE.UI4: {
+      const buf = Buffer.alloc(4);
+      const intValue =
+        value === null || value === undefined ? 0 : Math.trunc(Number(value));
+      if (type === DBTYPE.UI4) {
+        buf.writeUInt32LE(intValue >>> 0, 0);
+      } else {
+        buf.writeInt32LE(intValue, 0);
+      }
+      return buf;
+    }
+    case DBTYPE.R4: {
+      const buf = Buffer.alloc(4);
+      buf.writeFloatLE(value === null || value === undefined ? 0.0 : Number(value), 0);
+      return buf;
+    }
+    case DBTYPE.R8: {
+      const buf = Buffer.alloc(8);
+      buf.writeDoubleLE(value === null || value === undefined ? 0.0 : Number(value), 0);
+      return buf;
+    }
+    case DBTYPE.I2:
+    case DBTYPE.UI2: {
+      const buf = Buffer.alloc(2);
+      const intValue =
+        value === null || value === undefined ? 0 : Math.trunc(Number(value));
+      if (type === DBTYPE.UI2) {
+        buf.writeUInt16LE(intValue & 0xffff, 0);
+      } else {
+        buf.writeInt16LE(intValue, 0);
+      }
+      return buf;
+    }
+    case DBTYPE.I1:
+    case DBTYPE.UI1: {
+      const buf = Buffer.alloc(1);
+      const intValue =
+        value === null || value === undefined ? 0 : Math.trunc(Number(value));
+      if (type === DBTYPE.UI1) {
+        buf.writeUInt8(intValue & 0xff, 0);
+      } else {
+        buf.writeInt8(intValue, 0);
+      }
+      return buf;
+    }
+    default:
+      return Buffer.alloc(0);
+  }
+}
+
+function compressRle(buffer) {
+  const out = Buffer.alloc(Math.max(buffer.length * 2, 2));
+  let nibble = 0;
+  let nibbleIndex = 0;
+  let inputIndex = 0;
+  let outputIndex = 0;
+  let zeroChains = 0;
+
+  while (inputIndex < buffer.length) {
+    if (!nibble) {
+      nibbleIndex = outputIndex++;
+      out[nibbleIndex] = 0;
+    }
+
+    const start = inputIndex;
+    let end = inputIndex + 8;
+    if (end > buffer.length) {
+      end = buffer.length;
+    }
+
+    let count;
+    if (buffer[inputIndex] !== 0) {
+      zeroChains = 0;
+      do {
+        out[outputIndex++] = buffer[inputIndex++];
+      } while (inputIndex < end && buffer[inputIndex] !== 0);
+      count = start - inputIndex + 8;
+    } else {
+      zeroChains += 1;
+      while (inputIndex < end && buffer[inputIndex] === 0) {
+        inputIndex += 1;
+      }
+      count = inputIndex - start + 7;
+    }
+
+    if (nibble) {
+      out[nibbleIndex] |= count << 4;
+    } else {
+      out[nibbleIndex] = count;
+    }
+    nibble = nibble ? 0 : 1;
+  }
+
+  if (nibble && zeroChains) {
+    zeroChains += 1;
+  }
+
+  while (zeroChains > 1) {
+    zeroChains -= 2;
+    outputIndex -= 1;
+  }
+
+  return out.subarray(0, outputIndex);
+}
+
+function encodePackedRow(packedRow, chunks) {
+  const columns = normalizePackedRowColumns(packedRow);
+  const values = normalizePackedRowValueMap(packedRow, columns);
+
+  chunks.push(Buffer.from([Op.PyPackedRow]));
+  encodeValue(packedRow.header, chunks);
+
+  const sizeMap = [];
+  const booleanColumns = new Map();
+  let byteDataBitLength = 0;
+  let booleansBitLength = 0;
+  let nullsBitLength = 0;
+
+  for (let index = 0; index < columns.length; index += 1) {
+    const [, type] = columns[index];
+    const size = getDbTypeSizeBits(type);
+
+    if (type === DBTYPE.BOOL) {
+      booleanColumns.set(index, booleansBitLength);
+      booleansBitLength += 1;
+    }
+
+    nullsBitLength += 1;
+
+    if (size >= 8) {
+      byteDataBitLength += size;
+    }
+
+    sizeMap.push({ size, index, type });
+  }
+
+  sizeMap.sort((left, right) => {
+    if (right.size !== left.size) {
+      return right.size - left.size;
+    }
+    return left.index - right.index;
+  });
+
+  const bitData = Buffer.alloc(((booleansBitLength + nullsBitLength) >> 3) + 1, 0);
+  const rowDataParts = [];
+
+  for (const entry of sizeMap) {
+    if (entry.size <= 1) {
+      continue;
+    }
+
+    const value = values[entry.index];
+    if (value === null || value === undefined) {
+      const nullBit = entry.index + booleansBitLength;
+      const nullByte = nullBit >> 3;
+      bitData[nullByte] |= 1 << (nullBit & 0x7);
+    }
+
+    rowDataParts.push(encodePackedNumericValue(entry.type, value));
+  }
+
+  for (const entry of sizeMap) {
+    if (entry.size !== 1) {
+      continue;
+    }
+
+    if (values[entry.index]) {
+      const boolBit = booleanColumns.get(entry.index);
+      const boolByte = boolBit >> 3;
+      bitData[boolByte] |= 1 << (boolBit & 0x7);
+    }
+  }
+
+  rowDataParts.push(bitData);
+  const packedBuffer = Buffer.concat(rowDataParts);
+  const rleBuffer = compressRle(packedBuffer);
+  putSizeEx(rleBuffer.length, chunks);
+  chunks.push(rleBuffer);
+
+  for (const entry of sizeMap) {
+    if (entry.size !== 0) {
+      continue;
+    }
+    encodeValue(values[entry.index], chunks);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

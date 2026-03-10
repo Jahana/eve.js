@@ -11,6 +11,20 @@ const { resolveShipByTypeID } = require(path.join(
   __dirname,
   "../chat/shipTypeRegistry",
 ));
+const {
+  getCharacterRecord,
+  getActiveShipRecord,
+  findCharacterShip,
+} = require(path.join(__dirname, "../character/characterState"));
+const {
+  getCharacterSkillPointTotal,
+} = require(path.join(__dirname, "../skills/skillState"));
+
+const ATTRIBUTE_CHARISMA = 164;
+const ATTRIBUTE_INTELLIGENCE = 165;
+const ATTRIBUTE_MEMORY = 166;
+const ATTRIBUTE_PERCEPTION = 167;
+const ATTRIBUTE_WILLPOWER = 168;
 
 class DogmaService extends BaseService {
   constructor() {
@@ -46,6 +60,14 @@ class DogmaService extends BaseService {
     );
   }
 
+  _getCharacterRecord(session) {
+    return getCharacterRecord(this._getCharID(session));
+  }
+
+  _getActiveShipRecord(session) {
+    return getActiveShipRecord(this._getCharID(session));
+  }
+
   _getLocationID(session) {
     return (
       (session && (session.stationid || session.stationID || session.locationid || session.solarsystemid2 || session.solarsystemid)) ||
@@ -57,7 +79,39 @@ class DogmaService extends BaseService {
     return BigInt(Date.now()) * 10000n + 116444736000000000n;
   }
 
-  _buildInvRow(itemID, typeID, ownerID, locationID, flagID, groupID, categoryID) {
+  _toBoolArg(value, fallback = true) {
+    if (value === undefined || value === null) {
+      return fallback;
+    }
+
+    if (typeof value === "boolean") {
+      return value;
+    }
+
+    if (typeof value === "number") {
+      return value !== 0;
+    }
+
+    if (typeof value === "object" && value.type === "bool") {
+      return Boolean(value.value);
+    }
+
+    return fallback;
+  }
+
+  _buildInvRow({
+    itemID,
+    typeID,
+    ownerID,
+    locationID,
+    flagID,
+    groupID,
+    categoryID,
+    quantity = -1,
+    singleton = 1,
+    stacksize = 1,
+    customInfo = "",
+  }) {
     return {
       type: "object",
       name: "util.Row",
@@ -88,12 +142,12 @@ class DogmaService extends BaseService {
               ownerID,
               locationID,
               flagID,
-              1,
+              quantity,
               groupID,
               categoryID,
-              "",
-              1,
-              1,
+              customInfo,
+              singleton,
+              stacksize,
             ],
           ],
         ],
@@ -101,8 +155,22 @@ class DogmaService extends BaseService {
     };
   }
 
-  _buildCommonGetInfoEntry({ itemID, typeID, ownerID, locationID, flagID, groupID, categoryID, description }) {
-    const invItem = this._buildInvRow(
+  _buildCommonGetInfoEntry({
+    itemID,
+    typeID,
+    ownerID,
+    locationID,
+    flagID,
+    groupID,
+    categoryID,
+    quantity = -1,
+    singleton = 1,
+    stacksize = 1,
+    customInfo = "",
+    description,
+    attributes = null,
+  }) {
+    const invItem = this._buildInvRow({
       itemID,
       typeID,
       ownerID,
@@ -110,7 +178,11 @@ class DogmaService extends BaseService {
       flagID,
       groupID,
       categoryID,
-    );
+      quantity,
+      singleton,
+      stacksize,
+      customInfo,
+    });
     const now = this._nowFileTime();
 
     return {
@@ -122,7 +194,7 @@ class DogmaService extends BaseService {
           ["itemID", itemID],
           ["invItem", invItem],
           ["activeEffects", { type: "dict", entries: [] }],
-          ["attributes", { type: "dict", entries: [] }],
+          ["attributes", attributes || { type: "dict", entries: [] }],
           ["description", description || ""],
           ["time", now],
           ["wallclockTime", now],
@@ -131,7 +203,16 @@ class DogmaService extends BaseService {
     };
   }
 
-  _buildShipStatusRow(shipID) {
+  _buildStatusRow({
+    itemID,
+    online = false,
+    damage = 0.0,
+    charge = 0.0,
+    skillPoints = 0,
+    armorDamage = 0.0,
+    shieldCharge = 0.0,
+    incapacitated = false,
+  }) {
     return {
       type: "object",
       name: "util.Row",
@@ -139,15 +220,97 @@ class DogmaService extends BaseService {
         type: "dict",
         entries: [
           ["header", ["instanceID", "online", "damage", "charge", "skillPoints", "armorDamage", "shieldCharge", "incapacitated"]],
-          ["line", [shipID, false, 0.0, 0.0, 0, 0.0, 1.0, false]],
+          ["line", [itemID, online, damage, charge, skillPoints, armorDamage, shieldCharge, incapacitated]],
         ],
       },
     };
   }
 
+  _buildCharacterAttributes(charData = {}) {
+    const source = charData.characterAttributes || {};
+    return {
+      [ATTRIBUTE_CHARISMA]: Number(source[ATTRIBUTE_CHARISMA] ?? source.charisma ?? 20),
+      [ATTRIBUTE_INTELLIGENCE]: Number(
+        source[ATTRIBUTE_INTELLIGENCE] ?? source.intelligence ?? 20,
+      ),
+      [ATTRIBUTE_MEMORY]: Number(source[ATTRIBUTE_MEMORY] ?? source.memory ?? 20),
+      [ATTRIBUTE_PERCEPTION]: Number(
+        source[ATTRIBUTE_PERCEPTION] ?? source.perception ?? 20,
+      ),
+      [ATTRIBUTE_WILLPOWER]: Number(source[ATTRIBUTE_WILLPOWER] ?? source.willpower ?? 20),
+    };
+  }
+
+  _buildCharacterAttributeDict(charData = {}) {
+    const attributes = this._buildCharacterAttributes(charData);
+    return {
+      type: "dict",
+      entries: Object.entries(attributes).map(([attributeID, value]) => [
+        Number(attributeID),
+        value,
+      ]),
+    };
+  }
+
+  _buildEmptyDict() {
+    return { type: "dict", entries: [] };
+  }
+
+  _buildEmptyList() {
+    return { type: "list", items: [] };
+  }
+
+  _buildCharacterInfoDict(charID, charData, shipID) {
+    return {
+      type: "dict",
+      entries: [
+        [
+          charID,
+          this._buildCommonGetInfoEntry({
+            itemID: charID,
+            typeID: charData.typeID || 1373,
+            ownerID: charID,
+            locationID: shipID,
+            flagID: 0,
+            groupID: 1,
+            categoryID: 3,
+            quantity: -1,
+            singleton: 1,
+            stacksize: 1,
+            description: "character",
+            attributes: this._buildCharacterAttributeDict(charData),
+          }),
+        ],
+      ],
+    };
+  }
+
+  _buildShipState(charID, shipID) {
+    return {
+      type: "dict",
+      entries: [
+        [
+          shipID,
+          this._buildStatusRow({
+            itemID: shipID,
+            shieldCharge: 1.0,
+          }),
+        ],
+        [
+          charID,
+          this._buildStatusRow({
+            itemID: charID,
+            online: true,
+            skillPoints: getCharacterSkillPointTotal(charID) || 0,
+          }),
+        ],
+      ],
+    };
+  }
+
   Handle_GetCharacterAttributes(args, session) {
     log.debug("[DogmaIM] GetCharacterAttributes");
-    return { type: "dict", entries: [] };
+    return this._buildCharacterAttributeDict(this._getCharacterRecord(session) || {});
   }
 
   Handle_ShipOnlineModules(args, session) {
@@ -159,30 +322,37 @@ class DogmaService extends BaseService {
     log.debug("[DogmaIM] GetAllInfo");
 
     const charID = this._getCharID(session);
-    const shipID = this._getShipID(session);
-    const shipMetadata = this._getShipMetadata(session);
+    const charData = this._getCharacterRecord(session) || {};
+    const activeShip = this._getActiveShipRecord(session);
+    const shipID = activeShip ? activeShip.itemID : this._getShipID(session);
+    const shipMetadata = activeShip || this._getShipMetadata(session);
     const ownerID = charID;
     const locationID = this._getLocationID(session);
-
-    const charInfoEntry = this._buildCommonGetInfoEntry({
-      itemID: charID,
-      typeID: 1373,
-      ownerID,
-      locationID,
-      flagID: 0,
-      groupID: 1,
-      categoryID: 3,
-      description: "character",
-    });
+    const getCharInfo = this._toBoolArg(args && args[0], true);
+    const getShipInfo = this._toBoolArg(args && args[1], true);
+    const locationInfo = this._buildEmptyDict();
 
     const shipInfoEntry = this._buildCommonGetInfoEntry({
       itemID: shipID,
       typeID: shipMetadata.typeID,
-      ownerID,
-      locationID,
-      flagID: 4,
+      ownerID: shipMetadata.ownerID || ownerID,
+      locationID: shipMetadata.locationID || locationID,
+      flagID: shipMetadata.flagID || 4,
       groupID: shipMetadata.groupID,
       categoryID: shipMetadata.categoryID,
+      quantity:
+        shipMetadata.quantity === undefined || shipMetadata.quantity === null
+          ? -1
+          : shipMetadata.quantity,
+      singleton:
+        shipMetadata.singleton === undefined || shipMetadata.singleton === null
+          ? 1
+          : shipMetadata.singleton,
+      stacksize:
+        shipMetadata.stacksize === undefined || shipMetadata.stacksize === null
+          ? 1
+          : shipMetadata.stacksize,
+      customInfo: shipMetadata.customInfo || "",
       description: "ship",
     });
 
@@ -193,31 +363,38 @@ class DogmaService extends BaseService {
         type: "dict",
         entries: [
           ["activeShipID", shipID],
-          ["locationInfo", { type: "dict", entries: [] }],
+          ["locationInfo", getShipInfo ? locationInfo : null],
           ["shipModifiedCharAttribs", null],
           [
             "charInfo",
-            {
-              type: "dict",
-              entries: [[charID, charInfoEntry]],
-            },
+            getCharInfo
+              ? {
+                  type: "list",
+                  items: [
+                    this._buildCharacterInfoDict(charID, charData, shipID),
+                    this._buildEmptyList(),
+                  ],
+                }
+              : {
+                  type: "list",
+                  items: [this._buildEmptyDict(), this._buildEmptyList()],
+                },
           ],
           [
             "shipInfo",
-            {
-              type: "dict",
-              entries: [[shipID, shipInfoEntry]],
-            },
+            getShipInfo
+              ? {
+                  type: "dict",
+                  entries: [[shipID, shipInfoEntry]],
+                }
+              : this._buildEmptyDict(),
           ],
           [
             "shipState",
             [
-              {
-                type: "dict",
-                entries: [[shipID, this._buildShipStatusRow(shipID)]],
-              },
-              { type: "dict", entries: [] },
-              { type: "dict", entries: [] },
+              this._buildShipState(charID, shipID),
+              this._buildEmptyDict(),
+              this._buildEmptyDict(),
             ],
           ],
           ["systemWideEffectsOnShip", null],
@@ -229,19 +406,33 @@ class DogmaService extends BaseService {
 
   Handle_ShipGetInfo(args, session) {
     log.debug("[DogmaIM] ShipGetInfo");
-    const shipID = this._getShipID(session);
-    const shipMetadata = this._getShipMetadata(session);
-    const ownerID = this._getCharID(session);
-    const locationID = this._getLocationID(session);
+    const activeShip = this._getActiveShipRecord(session);
+    const shipID = activeShip ? activeShip.itemID : this._getShipID(session);
+    const shipMetadata = activeShip || this._getShipMetadata(session);
+    const ownerID = shipMetadata.ownerID || this._getCharID(session);
+    const locationID = shipMetadata.locationID || this._getLocationID(session);
 
     const entry = this._buildCommonGetInfoEntry({
       itemID: shipID,
       typeID: shipMetadata.typeID,
       ownerID,
       locationID,
-      flagID: 4,
+      flagID: shipMetadata.flagID || 4,
       groupID: shipMetadata.groupID,
       categoryID: shipMetadata.categoryID,
+      quantity:
+        shipMetadata.quantity === undefined || shipMetadata.quantity === null
+          ? -1
+          : shipMetadata.quantity,
+      singleton:
+        shipMetadata.singleton === undefined || shipMetadata.singleton === null
+          ? 1
+          : shipMetadata.singleton,
+      stacksize:
+        shipMetadata.stacksize === undefined || shipMetadata.stacksize === null
+          ? 1
+          : shipMetadata.stacksize,
+      customInfo: shipMetadata.customInfo || "",
       description: "ship",
     });
 
@@ -251,41 +442,59 @@ class DogmaService extends BaseService {
   Handle_CharGetInfo(args, session) {
     log.debug("[DogmaIM] CharGetInfo");
     const charID = this._getCharID(session);
-    const locationID = this._getLocationID(session);
-
-    const entry = this._buildCommonGetInfoEntry({
-      itemID: charID,
-      typeID: 1373,
-      ownerID: charID,
-      locationID,
-      flagID: 0,
-      groupID: 1,
-      categoryID: 3,
-      description: "character",
-    });
-
-    return { type: "dict", entries: [[charID, entry]] };
+    const charData = this._getCharacterRecord(session) || {};
+    const shipID = this._getShipID(session);
+    return this._buildCharacterInfoDict(charID, charData, shipID);
   }
 
   Handle_ItemGetInfo(args, session) {
     const requestedItemID = args && args.length > 0 ? args[0] : this._getShipID(session);
     log.debug(`[DogmaIM] ItemGetInfo(itemID=${requestedItemID})`);
 
-    const shipID = this._getShipID(session);
-    const isShip = requestedItemID === shipID;
-    const itemID = isShip ? shipID : Number.parseInt(String(requestedItemID), 10) || shipID;
-    const ownerID = this._getCharID(session);
+    const charID = this._getCharID(session);
+    const charData = this._getCharacterRecord(session) || {};
+    const numericItemID = Number.parseInt(String(requestedItemID), 10) || this._getShipID(session);
+    const shipRecord = findCharacterShip(charID, numericItemID);
+    const isCharacter = numericItemID === charID;
+    const itemID = isCharacter
+      ? charID
+      : shipRecord
+        ? shipRecord.itemID
+        : this._getShipID(session);
+    const ownerID = charID;
     const locationID = this._getLocationID(session);
-    const shipMetadata = this._getShipMetadata(session);
+    const shipMetadata = shipRecord || this._getActiveShipRecord(session) || this._getShipMetadata(session);
 
     return this._buildCommonGetInfoEntry({
       itemID,
-      typeID: shipMetadata.typeID,
+      typeID: isCharacter ? (charData.typeID || 1373) : shipMetadata.typeID,
       ownerID,
-      locationID,
-      flagID: isShip ? 4 : 0,
-      groupID: isShip ? shipMetadata.groupID : 1,
-      categoryID: isShip ? shipMetadata.categoryID : 3,
+      locationID: isCharacter ? locationID : (shipMetadata.locationID || locationID),
+      flagID: isCharacter ? 0 : (shipMetadata.flagID || 4),
+      groupID: isCharacter ? 1 : shipMetadata.groupID,
+      categoryID: isCharacter ? 3 : shipMetadata.categoryID,
+      quantity: isCharacter
+        ? -1
+        : (
+            shipMetadata.quantity === undefined || shipMetadata.quantity === null
+              ? -1
+              : shipMetadata.quantity
+          ),
+      singleton: isCharacter
+        ? 1
+        : (
+            shipMetadata.singleton === undefined || shipMetadata.singleton === null
+              ? 1
+              : shipMetadata.singleton
+          ),
+      stacksize: isCharacter
+        ? 1
+        : (
+            shipMetadata.stacksize === undefined || shipMetadata.stacksize === null
+              ? 1
+              : shipMetadata.stacksize
+          ),
+      customInfo: isCharacter ? "" : (shipMetadata.customInfo || ""),
       description: "item",
     });
   }

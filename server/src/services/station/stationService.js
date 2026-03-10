@@ -11,6 +11,14 @@
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
+const {
+  getStationRecord,
+  buildStationServiceMask,
+} = require(path.join(__dirname, "../_shared/stationStaticData"));
+const { buildKeyVal } = require(path.join(
+  __dirname,
+  "../_shared/serviceHelpers",
+));
 
 class StationService extends BaseService {
   constructor(name = "station") {
@@ -24,6 +32,7 @@ class StationService extends BaseService {
     console.log(`args data from station::GetStation() : ${JSON.stringify(args)}`)
 
     const stationID = args && args.length > 0 ? args[0] : 60003760;
+    const station = getStationRecord(session, stationID);
     log.info(`[StationSvc] GetStation(${stationID})`);
 
     return {
@@ -32,29 +41,27 @@ class StationService extends BaseService {
       args: {
         type: "dict",
         entries: [
-          ["stationID", stationID],
-          ["stationName", "Jita IV - Moon 4 - Caldari Navy Assembly Plant"],
-          ["stationTypeID", 1529],
-          ["solarSystemID", 30000142],
-          ["constellationID", 20000020],
-          ["regionID", 10000002],
-          ["ownerID", 1000127], // guristas pirates
-          ["corporationID", 1000127],  // guristas pirates
-          // ["ownerID", 1000009], // caldari provisions
-          // ["corporationID", 1000009], // caldari provisions
-          ["dockingCostPerVolume", 0.0],
-          ["maxShipVolumeDockable", 50000000.0],
-          ["officeRentalCost", 10000],
-          ["operationID", 22],
-          ["stationTypeID", 1529],
-          ["security", 1.0],
+          ["stationID", station.stationID],
+          ["stationName", station.stationName],
+          ["stationTypeID", station.stationTypeID],
+          ["solarSystemID", station.solarSystemID],
+          ["constellationID", station.constellationID],
+          ["regionID", station.regionID],
+          ["ownerID", station.ownerID],
+          ["corporationID", station.corporationID],
+          ["dockingCostPerVolume", station.dockingCostPerVolume],
+          ["maxShipVolumeDockable", Number(station.maxShipVolumeDockable)],
+          ["officeRentalCost", station.officeRentalCost],
+          ["operationID", station.operationID],
+          ["stationTypeID", station.stationTypeID],
+          ["security", station.security],
           ["x", 0.0],
           ["y", 0.0],
           ["z", 0.0],
           ["reprocessingEfficiency", 0.5],
-          ["reprocessingStationsTake", 0.05],
-          ["reprocessingHangarFlag", 4],
-          ["serviceMask", 4294967295],
+          ["reprocessingStationsTake", station.reprocessingStationsTake],
+          ["reprocessingHangarFlag", station.reprocessingHangarFlag],
+          ["serviceMask", buildStationServiceMask()],
         ],
       },
     };
@@ -70,10 +77,11 @@ class StationService extends BaseService {
 
     // owner id (which should be a corporation (possibly faction)) is not in session data.
     // TODO: either set up database with all station data, or always return static data (same corp every time)
-    const ownerID = 1000127; // IMPORTANT: REPLACE THIS WITH ACTUAL OWNER .. i made it guristas for gits and shiggles
-    const stationID = session.stationID
-    const operationID = 22;
-    const stationTypeID = 1529;
+    const station = getStationRecord(session);
+    const ownerID = station.ownerID;
+    const stationID = station.stationID;
+    const operationID = station.operationID;
+    const stationTypeID = station.stationTypeID;
 
     return [ownerID, stationID, operationID, stationTypeID];
   }
@@ -101,7 +109,26 @@ class StationService extends BaseService {
   // find out what it wants
   Handle_GetSolarSystem(args, session) {
     log.debug("[StationSvc] GetSolarSystem");
-    return null;
+    const station = getStationRecord(session);
+    return buildKeyVal([
+      ["solarSystemID", station.solarSystemID],
+      ["solarSystemName", station.solarSystemName],
+      ["constellationID", station.constellationID],
+      ["constellationName", station.constellationName || ""],
+      ["regionID", station.regionID],
+      ["regionName", station.regionName || ""],
+      ["security", Number(station.security || 0)],
+      ["factionID", station.factionID || null],
+      ["factionName", station.factionName || ""],
+      ["stationID", station.stationID],
+      ["stationName", station.stationName],
+      ["ownerID", station.ownerID],
+      ["ownerName", station.ownerName || station.corporationName || ""],
+      ["corporationID", station.corporationID || station.ownerID],
+      ["corporationName", station.corporationName || station.ownerName || ""],
+      ["orbitID", station.orbitID || null],
+      ["stationTypeID", station.stationTypeID || null],
+    ]);
   }
 }
 class StationSvcAlias extends StationService {

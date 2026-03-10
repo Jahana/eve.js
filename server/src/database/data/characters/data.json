@@ -22,9 +22,9 @@
     "securityRating": 0,
     "title": "",
     "description": "This is a placeholder character. If deleted, the server will break.",
-    "balance": 100000,
+    "balance": 5500100000,
     "aurBalance": 0,
-    "balanceChange": 0,
+    "balanceChange": 5000000000,
     "skillPoints": 50000,
     "shipTypeID": 23917,
     "shipName": "Wyvern",
@@ -48,6 +48,39 @@
     "queueEndTime": null,
     "finishSP": null,
     "trainedSP": null,
-    "finishedSkills": []
+    "finishedSkills": [],
+    "empireID": 500001,
+    "schoolID": 1000044,
+    "securityStatus": 0,
+    "walletJournal": [
+      {
+        "transactionID": 1773117724745605,
+        "transactionDate": "134175913247450000",
+        "referenceID": 140000001,
+        "entryTypeID": 1,
+        "ownerID1": 140000001,
+        "ownerID2": 140000001,
+        "accountKey": 1000,
+        "amount": 5000000000,
+        "balance": 5500100000,
+        "description": "Admin /addisk by DO NOT DELETE",
+        "currency": 1,
+        "sortValue": 1
+      },
+      {
+        "transactionID": 1773117713991331,
+        "transactionDate": "134175913139920000",
+        "referenceID": 140000001,
+        "entryTypeID": 1,
+        "ownerID1": 140000001,
+        "ownerID2": 140000001,
+        "accountKey": 1000,
+        "amount": 500000000,
+        "balance": 500100000,
+        "description": "Admin /addisk by DO NOT DELETE",
+        "currency": 1,
+        "sortValue": 1
+      }
+    ]
   }
 }

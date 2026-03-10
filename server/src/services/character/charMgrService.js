@@ -8,6 +8,24 @@
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
+const { getCharacterRecord } = require(path.join(__dirname, "./characterState"));
+const {
+  buildDict,
+  buildFiletimeLong,
+  buildKeyVal,
+  buildRow,
+  buildRowset,
+} = require(path.join(__dirname, "../_shared/serviceHelpers"));
+
+function resolveCharacterInfo(args, session) {
+  const charId =
+    args && args.length > 0 ? args[0] : session ? session.characterID : 0;
+
+  return {
+    charId,
+    charData: getCharacterRecord(charId) || {},
+  };
+}
 
 class CharMgrService extends BaseService {
   constructor() {
@@ -15,36 +33,39 @@ class CharMgrService extends BaseService {
   }
 
   Handle_GetPublicInfo(args, session) {
-    const charId =
-      args && args.length > 0 ? args[0] : session ? session.characterID : 0;
+    const { charId, charData } = resolveCharacterInfo(args, session);
     log.info(`[CharMgr] GetPublicInfo(${charId})`);
+    const factionID = charData.factionID ?? null;
+    const empireID = charData.empireID ?? factionID;
 
-    return {
-      type: "object",
-      name: "util.KeyVal",
-      args: {
-        type: "dict",
-        entries: [
-          ["characterID", charId],
-          ["characterName", session ? session.characterName : "Unknown"],
-          ["typeID", 1373],
-          ["raceID", 1],
-          ["bloodlineID", 1],
-          ["ancestryID", 1],
-          ["corporationID", session ? session.corporationID : 1000009],
-          ["allianceID", session ? session.allianceID : null],
-          ["gender", 1],
-          [
-            "createDateTime",
-            {
-              type: "long",
-              value: BigInt(Date.now()) * 10000n + 116444736000000000n,
-            },
-          ],
-          ["description", ""],
-        ],
-      },
-    };
+    return buildKeyVal([
+      ["characterID", charId],
+      [
+        "characterName",
+        charData.characterName || (session ? session.characterName : "Unknown"),
+      ],
+      ["typeID", charData.typeID || 1373],
+      ["raceID", charData.raceID || 1],
+      ["bloodlineID", charData.bloodlineID || 1],
+      ["ancestryID", charData.ancestryID || 1],
+      [
+        "corporationID",
+        charData.corporationID || (session ? session.corporationID : 1000009),
+      ],
+      ["allianceID", charData.allianceID || (session ? session.allianceID : null)],
+      ["factionID", factionID],
+      ["empireID", empireID],
+      ["schoolID", charData.schoolID ?? charData.corporationID ?? null],
+      ["gender", charData.gender || 1],
+      ["createDateTime", buildFiletimeLong(charData.createDateTime)],
+      ["description", charData.description || ""],
+      ["securityRating", Number(charData.securityStatus ?? charData.securityRating ?? 0)],
+      ["securityStatus", Number(charData.securityStatus ?? charData.securityRating ?? 0)],
+      ["bounty", Number(charData.bounty || 0)],
+      ["title", charData.title || ""],
+      ["stationID", charData.stationID || (session ? session.stationID : 60003760)],
+      ["solarSystemID", charData.solarSystemID || (session ? session.solarsystemid2 : 30000142)],
+    ]);
   }
 
   Handle_GetPublicInfo3(args, session) {
@@ -52,68 +73,114 @@ class CharMgrService extends BaseService {
     return this.Handle_GetPublicInfo(args, session);
   }
 
-  Handle_GetTopBounties(args, session) {
+  Handle_GetTopBounties() {
     log.debug("[CharMgr] GetTopBounties");
     return { type: "list", items: [] };
   }
 
   Handle_GetPrivateInfo(args, session) {
     log.debug("[CharMgr] GetPrivateInfo");
-    return { type: "dict", entries: [] };
+    const { charId, charData } = resolveCharacterInfo(args, session);
+    return buildRow(
+      [
+        "characterID",
+        "gender",
+        "createDateTime",
+        "raceID",
+        "bloodlineID",
+        "ancestryID",
+        "balance",
+        "securityRating",
+      ],
+      [
+        charId,
+        charData.gender || 1,
+        buildFiletimeLong(charData.createDateTime),
+        charData.raceID || 1,
+        charData.bloodlineID || 1,
+        charData.ancestryID || 1,
+        Number(charData.balance ?? 0),
+        Number(charData.securityStatus ?? charData.securityRating ?? 0),
+      ],
+    );
+  }
+
+  Handle_GetCharacterDescription(args, session) {
+    const { charData } = resolveCharacterInfo(args, session);
+    log.debug("[CharMgr] GetCharacterDescription");
+    return charData.description || "";
   }
 
   Handle_GetCloneInfo(args, session) {
     log.debug("[CharMgr] GetCloneInfo");
-    return null;
+    const { charData } = resolveCharacterInfo(args, session);
+    const stationId =
+      charData.stationID ||
+      (session ? session.stationID || session.stationid : 60003760);
+
+    return buildKeyVal([
+      ["homeStationID", stationId],
+      ["cloneStationID", stationId],
+      ["clones", buildDict([])],
+      ["implants", buildDict([])],
+      ["timeLastJump", buildFiletimeLong(0n)],
+    ]);
   }
 
   Handle_GetHomeStation(args, session) {
     log.debug("[CharMgr] GetHomeStation");
-    return session ? session.stationID : 60003760;
+    const { charData } = resolveCharacterInfo(args, session);
+    return charData.stationID || (session ? session.stationID : 60003760);
   }
 
-  Handle_LogStartOfCharacterCreation(args, session) {
+  Handle_LogStartOfCharacterCreation() {
     log.debug("[CharMgr] LogStartOfCharacterCreation");
     return null;
   }
 
   // EVEmu PDState: 0=NoRecustomization (finalized), 1=Resculpting,
   // 2=NoExistingCustomization, 3=FullRecustomizing, 4=ForceRecustomize
-  Handle_GetPaperdollState(args, session) {
-    log.debug("[CharMgr] GetPaperdollState → 0 (NoRecustomization)");
-    return 0; // Portrait is finalized
+  Handle_GetPaperdollState() {
+    log.debug("[CharMgr] GetPaperdollState -> 0 (NoRecustomization)");
+    return 0;
   }
 
-  Handle_GetCharacterSettings(args, session) {
+  Handle_GetCharacterSettings() {
     log.debug("[CharMgr] GetCharacterSettings called");
-    return { type: "dict", entries: [] };
+    return buildKeyVal([
+      ["public", buildDict([])],
+      ["private", buildDict([])],
+      ["ui", buildDict([])],
+    ]);
   }
 
-  Handle_GetSettingsInfo(args, session) {
+  Handle_GetSettingsInfo() {
     log.debug("[CharMgr] GetSettingsInfo called");
-    // Hand-crafted Python 2.7 bytecode for `def f(): return {}`
-    // The client calls this code and does len(result), so must return dict not None.
-    // co_code = BUILD_MAP(0) + RETURN_VALUE = \x69\x00\x00\x53
-    // co_stacksize = 1 (one dict on stack)
     const py2codeHex =
       "630000000000000000010000004300000073040000006900005328010000004e280000000028000000002800000000280000000073080000003c737472696e673e740100000066010000007300000000";
     return [Buffer.from(py2codeHex, "hex"), 0];
   }
 
-  Handle_GetContactList(args, session) {
+  Handle_GetContactList() {
     log.debug("[CharMgr] GetContactList called");
-    // EVEmu returns util.KeyVal with 'addresses' and 'blocked' rowsets
-    return {
-      type: "object",
-      name: "util.KeyVal",
-      args: {
-        type: "dict",
-        entries: [
-          ["addresses", { type: "list", items: [] }],
-          ["blocked", { type: "list", items: [] }],
-        ],
-      },
-    };
+    return buildKeyVal([
+      [
+        "addresses",
+        buildRowset(
+          ["contactID", "inWatchlist", "relationshipID", "labelMask"],
+          [],
+          "eve.common.script.sys.rowset.Rowset",
+        ),
+      ],
+      [
+        "blocked",
+        buildRowset(
+          ["contactID", "inWatchlist", "relationshipID", "labelMask"],
+          [],
+          "eve.common.script.sys.rowset.Rowset",
+        ),
+      ],
+    ]);
   }
 }
 
