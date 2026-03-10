@@ -72,3 +72,5 @@
 [2026-03-10T04:43:36.906Z] SlashCmd user=1 char=140000001 command="/announce hi everyone" args=[{"type":"wstring","value":"/announce hi everyone"}] kwargs={"type":"dict","entries":[["machoVersion",1]]}
 [2026-03-10T04:44:07.578Z] CallReq method=SlashCmd callID=198 args=["<Buffer:/tr me 140000115>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 140000115>"],{"type":"dict","entries":[["machoVersion",1]]}]
 [2026-03-10T04:44:07.581Z] SlashCmd user=1 char=140000001 command="/tr me 140000115" args=["<Buffer:/tr me 140000115>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-10T23:06:32.754Z] CallReq method=SlashCmd callID=141 args=["<Buffer:/tr me 40009098>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 40009098>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-10T23:06:32.760Z] SlashCmd user=1 char=140000001 command="/tr me 40009098" args=["<Buffer:/tr me 40009098>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}

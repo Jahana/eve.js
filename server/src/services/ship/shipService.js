@@ -11,14 +11,18 @@ const {
 const {
   ensureCapsuleForCharacter,
   ITEM_FLAGS,
+  getShipConditionState,
   setShipPackagingState,
 } = require(path.join(__dirname, "../inventory/itemStore"));
 const {
   getCharacterSkillPointTotal,
 } = require(path.join(__dirname, "../skills/skillState"));
-const { resolveSessionCharacterId } = require(path.join(
+const {
+  undockSession,
+} = require(path.join(__dirname, "../../space/transitions"));
+const { performCharacterLogoff } = require(path.join(
   __dirname,
-  "../_shared/characterResolver",
+  "../user/logoffCharacter",
 ));
 const DBTYPE_I4 = 0x03;
 const DBTYPE_R8 = 0x05;
@@ -42,10 +46,9 @@ class ShipService extends BaseService {
   }
 
   _getShipID(session) {
-    const charID = resolveSessionCharacterId(session);
     const activeShip =
-      charID > 0
-        ? getActiveShipRecord(charID)
+      session && session.characterID
+        ? getActiveShipRecord(session.characterID)
         : null;
     return (
       (activeShip && (activeShip.itemID || activeShip.shipID)) ||
@@ -90,14 +93,18 @@ class ShipService extends BaseService {
   }
 
   _buildActivationResponse(activeShip, session) {
-    // V23.02 clientDogmaLocation._MakeShipActive unpacks:
-    //   instanceCache, instanceFlagQuantityCache, wbData, heatStates
-    // Returning the older 3-tuple crashes boarding/activation immediately.
-    const charID = resolveSessionCharacterId(session);
+    // The live 23.02 client build in use here still expects a 4-slot
+    // activation tuple during ship boarding/activation. The first three slots
+    // are the usual instance/charge/weapon-bank caches; the fourth is kept as
+    // an empty reserved payload for compatibility with the running client.
+    const charID =
+      (session && (session.characterID || session.charid || session.userid)) ||
+      140000001;
     const shipID =
       (activeShip && (activeShip.itemID || activeShip.shipID)) ||
       this._getShipID(session);
     const skillPoints = getCharacterSkillPointTotal(charID) || 0;
+    const shipCondition = getShipConditionState(activeShip);
 
     return [
       {
@@ -107,7 +114,11 @@ class ShipService extends BaseService {
             shipID,
             this._buildPackedInstanceRow({
               itemID: shipID,
-              shieldCharge: 1.0,
+              damage: shipCondition.damage,
+              charge: shipCondition.charge,
+              armorDamage: shipCondition.armorDamage,
+              shieldCharge: shipCondition.shieldCharge,
+              incapacitated: shipCondition.incapacitated,
             }),
           ],
           [
@@ -435,9 +446,33 @@ class ShipService extends BaseService {
     return this._activateShipById(shipID, session, "Board");
   }
 
+  Handle_Undock(args, session, kwargs) {
+    const shipID = args && args.length > 0 ? args[0] : this._getShipID(session);
+    const ignoreContraband = args && args.length > 1 ? Boolean(args[1]) : false;
+
+    log.info(
+      `[Ship] Undock(shipID=${String(shipID)}, ignoreContraband=${ignoreContraband})`,
+    );
+
+    const result = undockSession(session);
+    if (!result.success) {
+      log.warn(
+        `[Ship] Undock failed for char=${session && session.characterID}: ${result.errorMsg}`,
+      );
+      return null;
+    }
+
+    return result.data.boundResult || null;
+  }
+
   Handle_Eject(args, session, kwargs) {
     log.info("[Ship] Eject()");
     return this._leaveShip(session, null, "Eject");
+  }
+
+  Handle_SafeLogoff(args, session, kwargs) {
+    log.info("[Ship] SafeLogoff()");
+    return performCharacterLogoff(session, "Ship");
   }
 
   Handle_GetTurretModules(args, session, kwargs) {
@@ -565,6 +600,14 @@ class ShipService extends BaseService {
     const idString = `N=${config.proxyNodeId}:${boundId}`;
     const now = BigInt(Date.now()) * 10000n + 116444736000000000n;
     const oid = [idString, now];
+
+    if (session) {
+      if (!session._boundObjectIDs || typeof session._boundObjectIDs !== "object") {
+        session._boundObjectIDs = {};
+      }
+      session._boundObjectIDs.ship = idString;
+      session.lastBoundObjectID = idString;
+    }
 
     let callResult = null;
     if (nestedCall && Array.isArray(nestedCall) && nestedCall.length >= 1) {

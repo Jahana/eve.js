@@ -119,6 +119,10 @@ function appendSessionChange(changes, key, oldValue, newValue) {
   changes[key] = [oldValue, newValue];
 }
 
+function hasLocationID(value) {
+  return Number.isInteger(Number(value)) && Number(value) > 0;
+}
+
 function deriveEmpireID(record) {
   if (!record || typeof record !== "object") {
     return null;
@@ -144,6 +148,32 @@ function deriveFactionID(record) {
   return null;
 }
 
+function resolveHomeStationInfo(charData = {}, session = null) {
+  const authoritativeHomeStationID =
+    Number(charData.homeStationID || charData.cloneStationID || 0) || 0;
+  const fallbackHomeStationID =
+    Number(
+      charData.stationID ||
+        charData.worldSpaceID ||
+        (session &&
+          (session.homeStationID ||
+            session.cloneStationID ||
+            session.stationID ||
+            session.stationid ||
+            session.worldspaceid)) ||
+        60003760,
+    ) || 60003760;
+  const homeStationID = authoritativeHomeStationID || fallbackHomeStationID;
+
+  return {
+    homeStationID,
+    cloneStationID:
+      Number(charData.cloneStationID || authoritativeHomeStationID || homeStationID) ||
+      homeStationID,
+    isFallback: !authoritativeHomeStationID,
+  };
+}
+
 function normalizeCharacterRecord(charId, record) {
   if (!record || typeof record !== "object") {
     return null;
@@ -167,18 +197,6 @@ function normalizeCharacterRecord(charId, record) {
   if (!Object.prototype.hasOwnProperty.call(normalized, "factionID")) {
     normalized.factionID = null;
   }
-  if (!Object.prototype.hasOwnProperty.call(normalized, "online")) {
-    normalized.online = false;
-  }
-  if (!Object.prototype.hasOwnProperty.call(normalized, "walletJournal")) {
-    normalized.walletJournal = [];
-  }
-  if (!Array.isArray(normalized.walletJournal)) {
-    normalized.walletJournal = [];
-  }
-  normalized.balance = Number(normalized.balance ?? 100000.0);
-  normalized.aurBalance = Number(normalized.aurBalance ?? 0.0);
-  normalized.balanceChange = Number(normalized.balanceChange ?? 0.0);
   normalized.factionID = deriveFactionID(normalized);
   normalized.empireID = deriveEmpireID(normalized);
   if (!normalized.schoolID) {
@@ -191,6 +209,10 @@ function normalizeCharacterRecord(charId, record) {
   if (Number.isFinite(totalSkillPoints) && totalSkillPoints > 0) {
     normalized.skillPoints = totalSkillPoints;
   }
+
+  const homeStationInfo = resolveHomeStationInfo(normalized);
+  normalized.homeStationID = homeStationInfo.homeStationID;
+  normalized.cloneStationID = homeStationInfo.cloneStationID;
 
   if (Object.prototype.hasOwnProperty.call(normalized, "storedShips")) {
     delete normalized.storedShips;
@@ -392,7 +414,9 @@ function applyCharacterToSession(session, charId, options = {}) {
   const oldCorpID = session.corporationID;
   const oldAllianceID = session.allianceID;
   const oldStationID = session.stationID || session.stationid || null;
-  const oldSolarSystemID = session.solarsystemid2 || session.solarsystemid || null;
+  const oldStationID2 = session.stationid2 || null;
+  const oldSolarSystemID = session.solarsystemid || null;
+  const oldSolarSystemID2 = session.solarsystemid2 || null;
   const oldConstellationID = session.constellationID;
   const oldRegionID = session.regionID;
   const oldGenderID = session.genderID ?? session.genderid ?? null;
@@ -402,6 +426,8 @@ function applyCharacterToSession(session, charId, options = {}) {
   const oldShipID = normalizeSessionShipValue(
     session.shipID ?? session.shipid ?? null,
   );
+  const oldLocationID = session.locationid ?? null;
+  const oldWorldspaceID = session.worldspaceid ?? null;
   const oldHqID = session.hqID;
   const oldBaseID = session.baseID;
   const oldWarFactionID = session.warFactionID;
@@ -410,23 +436,31 @@ function applyCharacterToSession(session, charId, options = {}) {
   const oldRolesAtBase = session.rolesAtBase ?? null;
   const oldRolesAtHQ = session.rolesAtHQ ?? null;
   const oldRolesAtOther = session.rolesAtOther ?? null;
-  const stationID = charData.stationID || 60003760;
-  const solarSystemID = charData.solarSystemID || 30000142;
+  const storedStationID = hasLocationID(charData.stationID)
+    ? Number(charData.stationID)
+    : null;
+  const storedSolarSystemID = hasLocationID(charData.solarSystemID)
+    ? Number(charData.solarSystemID)
+    : 30000142;
+  const homeStationInfo = resolveHomeStationInfo(charData, session);
+  const homeStationID = homeStationInfo.homeStationID;
+  const cloneStationID = homeStationInfo.cloneStationID;
+  const isDocked = Boolean(storedStationID);
+  const stationID = isDocked ? storedStationID : null;
+  const solarSystemID = storedSolarSystemID || 30000142;
   const shipID = activeShip.itemID || charData.shipID || Number(charId) + 100;
   const shipTypeID = activeShip.typeID || charData.shipTypeID || 601;
   const shipMetadata = resolveShipByTypeID(shipTypeID);
 
   session.characterID = charId;
   session.charid = charId;
-  session.selectedCharacterID = charId;
-  session.chatDisabled = false;
   session.characterName = charData.characterName || "Unknown";
   session.characterTypeID = charData.typeID || 1373;
-  session.genderID = charData.gender ?? 1;
+  session.genderID = charData.gender || 1;
   session.genderid = session.genderID;
-  session.bloodlineID = charData.bloodlineID ?? 1;
+  session.bloodlineID = charData.bloodlineID || 1;
   session.bloodlineid = session.bloodlineID;
-  session.raceID = charData.raceID ?? 1;
+  session.raceID = charData.raceID || 1;
   session.raceid = session.raceID;
   session.schoolID = charData.schoolID || charData.corporationID || null;
   session.schoolid = session.schoolID;
@@ -434,18 +468,25 @@ function applyCharacterToSession(session, charId, options = {}) {
   session.corpid = session.corporationID;
   session.allianceID = charData.allianceID || null;
   session.allianceid = session.allianceID || null;
-  session.stationid = stationID;
-  session.stationID = stationID;
-  session.stationid2 = stationID;
-  session.worldspaceid = null;
-  session.locationid = stationID;
+  session.stationid = isDocked ? stationID : null;
+  session.stationID = isDocked ? stationID : null;
+  session.stationid2 = isDocked ? stationID : null;
+  session.worldspaceid = isDocked ? stationID : null;
+  session.locationid = isDocked ? stationID : solarSystemID;
+  session.homeStationID = homeStationID;
+  session.homestationid = homeStationID;
+  session.cloneStationID = cloneStationID;
+  session.clonestationid = cloneStationID;
   session.solarsystemid2 = solarSystemID;
-  session.solarsystemid = solarSystemID;
+  session.solarsystemid = isDocked ? null : solarSystemID;
   session.constellationID = charData.constellationID || 20000020;
   session.constellationid = session.constellationID;
   session.regionID = charData.regionID || 10000002;
   session.regionid = session.regionID;
   session.activeShipID = shipID;
+  // V23.02 station flow still expects the active ship to remain present in the
+  // session while docked. Clearing it breaks hangar ship presentation and ship
+  // boarding updates in invCache/godma.
   session.shipID = shipID;
   session.shipid = shipID;
   session.shipTypeID = shipTypeID;
@@ -500,13 +541,25 @@ function applyCharacterToSession(session, charId, options = {}) {
       sessionChanges,
       "stationid",
       oldStationID || null,
-      session.stationid,
+      session.stationid || null,
+    );
+    appendSessionChange(
+      sessionChanges,
+      "stationid2",
+      oldStationID2 || null,
+      session.stationid2 || null,
+    );
+    appendSessionChange(
+      sessionChanges,
+      "solarsystemid",
+      oldSolarSystemID || null,
+      session.solarsystemid || null,
     );
     appendSessionChange(
       sessionChanges,
       "solarsystemid2",
-      oldSolarSystemID || null,
-      session.solarsystemid2,
+      oldSolarSystemID2 || null,
+      session.solarsystemid2 || null,
     );
     appendSessionChange(
       sessionChanges,
@@ -525,6 +578,18 @@ function applyCharacterToSession(session, charId, options = {}) {
       "shipid",
       normalizeSessionShipValue(oldShipID),
       normalizeSessionShipValue(session.shipID),
+    );
+    appendSessionChange(
+      sessionChanges,
+      "locationid",
+      oldLocationID || null,
+      session.locationid || null,
+    );
+    appendSessionChange(
+      sessionChanges,
+      "worldspaceid",
+      oldWorldspaceID || null,
+      session.worldspaceid || null,
     );
     if (isCharacterSelection) {
       appendSessionChange(
@@ -566,7 +631,7 @@ function applyCharacterToSession(session, charId, options = {}) {
 
   if (options.logSelection !== false) {
     log.info(
-      `[CharState] Applied ${session.characterName}(${charId}) ship=${session.shipName}(${session.shipTypeID}) activeShipID=${session.activeShipID} station=${session.stationid} system=${solarSystemID}`,
+      `[CharState] Applied ${session.characterName}(${charId}) ship=${session.shipName}(${session.shipTypeID}) activeShipID=${session.activeShipID} docked=${isDocked} station=${session.stationid} system=${solarSystemID}`,
     );
   }
 
@@ -670,6 +735,7 @@ module.exports = {
   CHARACTERS_TABLE,
   getCharacterRecord,
   updateCharacterRecord,
+  resolveHomeStationInfo,
   getCharacterShips,
   findCharacterShip,
   getActiveShipRecord,

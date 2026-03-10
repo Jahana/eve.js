@@ -17,14 +17,13 @@ const {
   findCharacterShip,
 } = require(path.join(__dirname, "../character/characterState"));
 const {
+  getShipConditionState,
+} = require(path.join(__dirname, "../inventory/itemStore"));
+const {
   getCharacterSkills,
   getCharacterSkillPointTotal,
   SKILL_FLAG_ID,
 } = require(path.join(__dirname, "../skills/skillState"));
-const { resolveSessionCharacterId } = require(path.join(
-  __dirname,
-  "../_shared/characterResolver",
-));
 
 const ATTRIBUTE_CHARISMA = 164;
 const ATTRIBUTE_INTELLIGENCE = 165;
@@ -55,8 +54,12 @@ class DogmaService extends BaseService {
     super("dogmaIM");
   }
 
+  _coalesce(value, fallback) {
+    return value === undefined || value === null ? fallback : value;
+  }
+
   _getCharID(session) {
-    return resolveSessionCharacterId(session);
+    return (session && (session.characterID || session.charid || session.userid)) || 140000001;
   }
 
   _getShipID(session) {
@@ -329,12 +332,12 @@ class DogmaService extends BaseService {
     return { type: "list", items: [] };
   }
 
-  _buildActivationState(charID, shipID) {
-    // V23.02 passes allInfo.shipState directly into
-    // clientDogmaLocation._MakeShipActive(), which unpacks:
-    // instanceCache, instanceFlagQuantityCache, wbData, heatStates
+  _buildActivationState(charID, shipID, shipRecord = null) {
+    // The live 23.02 client build in use here still expects a 4-slot
+    // shipState tuple during MakeShipActive on station boarding/login paths.
+    // Keep the fourth slot as an empty reserved payload for compatibility.
     return [
-      this._buildShipState(charID, shipID),
+      this._buildShipState(charID, shipID, shipRecord),
       this._buildEmptyDict(),
       this._buildEmptyDict(),
       this._buildEmptyDict(),
@@ -379,7 +382,8 @@ class DogmaService extends BaseService {
     return [0, [], [], []];
   }
 
-  _buildShipState(charID, shipID) {
+  _buildShipState(charID, shipID, shipRecord = null) {
+    const shipCondition = getShipConditionState(shipRecord);
     return {
       type: "dict",
       entries: [
@@ -387,7 +391,11 @@ class DogmaService extends BaseService {
           shipID,
           this._buildPackedInstanceRow({
             itemID: shipID,
-            shieldCharge: 1.0,
+            damage: shipCondition.damage,
+            charge: shipCondition.charge,
+            armorDamage: shipCondition.armorDamage,
+            shieldCharge: shipCondition.shieldCharge,
+            incapacitated: shipCondition.incapacitated,
           }),
         ],
         [
@@ -412,6 +420,16 @@ class DogmaService extends BaseService {
     return { type: "list", items: [] };
   }
 
+  Handle_GetTargets() {
+    log.debug("[DogmaIM] GetTargets");
+    return { type: "list", items: [] };
+  }
+
+  Handle_GetTargeters() {
+    log.debug("[DogmaIM] GetTargeters");
+    return { type: "list", items: [] };
+  }
+
   Handle_GetAllInfo(args, session) {
     log.debug("[DogmaIM] GetAllInfo");
 
@@ -430,8 +448,8 @@ class DogmaService extends BaseService {
       itemID: shipID,
       typeID: shipMetadata.typeID,
       ownerID: shipMetadata.ownerID || ownerID,
-      locationID: shipMetadata.locationID || locationID,
-      flagID: shipMetadata.flagID || 4,
+      locationID: this._coalesce(shipMetadata.locationID, locationID),
+      flagID: this._coalesce(shipMetadata.flagID, 4),
       groupID: shipMetadata.groupID,
       categoryID: shipMetadata.categoryID,
       quantity:
@@ -479,7 +497,7 @@ class DogmaService extends BaseService {
           ],
           [
             "shipState",
-            this._buildActivationState(charID, shipID),
+            this._buildActivationState(charID, shipID, activeShip),
           ],
           ["systemWideEffectsOnShip", null],
           ["structureInfo", null],
@@ -501,7 +519,7 @@ class DogmaService extends BaseService {
       typeID: shipMetadata.typeID,
       ownerID,
       locationID,
-      flagID: shipMetadata.flagID || 4,
+      flagID: this._coalesce(shipMetadata.flagID, 4),
       groupID: shipMetadata.groupID,
       categoryID: shipMetadata.categoryID,
       quantity:
@@ -549,7 +567,7 @@ class DogmaService extends BaseService {
         itemID: skillRecord.itemID,
         typeID: skillRecord.typeID,
         ownerID: skillRecord.ownerID || charID,
-        locationID: skillRecord.locationID || charID,
+        locationID: this._coalesce(skillRecord.locationID, charID),
         flagID: skillRecord.flagID ?? SKILL_FLAG_ID,
         groupID: skillRecord.groupID,
         categoryID: skillRecord.categoryID,
@@ -573,8 +591,10 @@ class DogmaService extends BaseService {
       itemID,
       typeID: isCharacter ? (charData.typeID || 1373) : shipMetadata.typeID,
       ownerID,
-      locationID: isCharacter ? locationID : (shipMetadata.locationID || locationID),
-      flagID: isCharacter ? 0 : (shipMetadata.flagID || 4),
+      locationID: isCharacter
+        ? locationID
+        : this._coalesce(shipMetadata.locationID, locationID),
+      flagID: isCharacter ? 0 : this._coalesce(shipMetadata.flagID, 4),
       groupID: isCharacter ? 1 : shipMetadata.groupID,
       categoryID: isCharacter ? 3 : shipMetadata.categoryID,
       quantity: isCharacter

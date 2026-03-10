@@ -15,10 +15,6 @@ const {
   getCharacterSkillPointTotal,
   getCharacterSkills,
 } = require(path.join(__dirname, "./skillState"));
-const {
-  resolveSessionCharacterId,
-  extractCharacterIdFromBindParams,
-} = require(path.join(__dirname, "../_shared/characterResolver"));
 
 const ATTRIBUTE_CHARISMA = 164;
 const ATTRIBUTE_INTELLIGENCE = 165;
@@ -40,19 +36,13 @@ function buildKeyVal(entries) {
 class SkillMgrService extends BaseService {
   constructor() {
     super("skillMgr");
-    this._boundCharacterIDs = new Map();
   }
 
   _getCharacterId(session) {
-    const boundObjectID =
-      session && typeof session.currentBoundObjectID === "string"
-        ? session.currentBoundObjectID
-        : null;
-    const boundCharacterID =
-      boundObjectID && this._boundCharacterIDs.has(boundObjectID)
-        ? this._boundCharacterIDs.get(boundObjectID)
-        : null;
-    return resolveSessionCharacterId(session, { boundCharacterId: boundCharacterID });
+    return (
+      (session && (session.characterID || session.charid || session.userid)) ||
+      140000001
+    );
   }
 
   _buildSkillInfo(skillRecord) {
@@ -271,10 +261,6 @@ class SkillMgrService extends BaseService {
     const idString = `N=${config.proxyNodeId}:${boundId}`;
     const now = BigInt(Date.now()) * 10000n + 116444736000000000n;
     const oid = [idString, now];
-    const bindCharacterID = resolveSessionCharacterId(session, {
-      boundCharacterId: extractCharacterIdFromBindParams(bindParams),
-    });
-    this._boundCharacterIDs.set(idString, bindCharacterID);
 
     let callResult = null;
     if (nestedCall && Array.isArray(nestedCall) && nestedCall.length >= 1) {

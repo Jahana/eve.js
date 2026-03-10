@@ -14,10 +14,12 @@ const {
   applyCharacterToSession,
   getCharacterRecord,
 } = require("./characterState");
+const { restoreSpaceSession } = require("../../space/transitions");
 const {
   ensureCharacterSkills,
   getCharacterSkillPointTotal,
 } = require("../skills/skillState");
+
 const { ensureCharacterInventory } = require("../inventory/itemStore");
 const {
   snapshotSessionPresence,
@@ -182,7 +184,10 @@ function resolveCharacterIdForSelection(args, kwargs, session) {
   const accountId = normalizeRpcInt(session && session.userid, 0);
 
   const fallbackIds = Object.entries(characters)
-    .filter(([, record]) => normalizeRpcInt(record && record.accountId, 0) === accountId)
+    .filter(
+      ([, record]) =>
+        normalizeRpcInt(record && record.accountId, 0) === accountId,
+    )
     .map(([id]) => normalizeRpcInt(id, 0))
     .filter((id) => id > 0)
     .sort((a, b) => b - a);
@@ -234,7 +239,7 @@ class CharService extends BaseService {
             ["characterID", parseInt(charId, 10)],
             ["characterName", charData.characterName || "Unknown"],
             ["deletePrepareDateTime", null],
-            ["gender", charData.gender ?? 1],
+            ["gender", charData.gender || 1],
             ["typeID", charData.typeID || 1373],
           ]),
         );
@@ -301,7 +306,7 @@ class CharService extends BaseService {
             ["characterID", cid],
             ["characterName", character.characterName || "Unknown"],
             ["deletePrepareDateTime", null],
-            ["gender", character.gender ?? 1],
+            ["gender", character.gender || 1],
             ["typeID", character.typeID || 1373],
             ["bloodlineID", character.bloodlineID || 1],
             ["corporationID", character.corporationID || 1000009],
@@ -310,7 +315,7 @@ class CharService extends BaseService {
             // Exposing empire/school/faction state here caused the client to
             // incorrectly surface war/faction UI on the selection screen.
             ["factionID", null],
-            ["stationID", character.stationID || 60003760],
+            ["stationID", character.stationID ?? null],
             ["solarSystemID", character.solarSystemID || 30000142],
             ["constellationID", character.constellationID || 20000020],
             ["regionID", character.regionID || 10000002],
@@ -402,7 +407,7 @@ class CharService extends BaseService {
       ["unprocessedNotifications", character.unprocessedNotifications || 0],
       ["characterID", parseInt(charId, 10)],
       ["petitionMessage", character.petitionMessage || ""],
-      ["gender", character.gender ?? 1],
+      ["gender", character.gender || 1],
       ["bloodlineID", character.bloodlineID || 1],
       [
         "createDateTime",
@@ -414,7 +419,7 @@ class CharService extends BaseService {
       ],
       ["corporationID", character.corporationID || 1000009],
       ["worldSpaceID", character.worldSpaceID || 0],
-      ["stationID", character.stationID || 60003760],
+      ["stationID", character.stationID ?? null],
       ["solarSystemID", character.solarSystemID || 30000142],
       ["constellationID", character.constellationID || 20000020],
       ["regionID", character.regionID || 10000002],
@@ -504,7 +509,6 @@ class CharService extends BaseService {
     const now = BigInt(Date.now()) * 10000n + 116444736000000000n;
 
     characters[String(newCharId)] = {
-      online: false,
       accountId: session ? session.userid : 1,
       characterName:
         typeof characterName === "string" ? characterName : "New Character",
@@ -517,6 +521,8 @@ class CharService extends BaseService {
       allianceID: 0,
       factionID: null,
       stationID: 60003760,
+      homeStationID: 60003760,
+      cloneStationID: 60003760,
       solarSystemID: 30000142,
       constellationID: 20000020,
       regionID: 10000002,
@@ -531,7 +537,6 @@ class CharService extends BaseService {
       balance: 100000.0,
       aurBalance: 0.0,
       balanceChange: 0.0,
-      walletJournal: [],
       skillPoints: 50000,
       shipTypeID: 606,
       shipName: "Velator",
@@ -556,9 +561,6 @@ class CharService extends BaseService {
       finishSP: null,
       trainedSP: null,
       finishedSkills: [],
-      empireID: EMPIRE_BY_CORPORATION[info.corpID] || null,
-      schoolID: info.corpID,
-      securityStatus: 0.0,
     };
 
     const newCharacterRecord = characters[String(newCharId)];
@@ -595,14 +597,8 @@ class CharService extends BaseService {
     if (session) {
       session.lastCreatedCharacterID = newCharId;
     }
-
+    
     ensureCharacterSkills(newCharId);
-    const inventoryEnsureResult = ensureCharacterInventory(newCharId);
-    if (!inventoryEnsureResult.success) {
-      log.warn(
-        `[CharService] Failed to initialize starter inventory for character ${newCharId}: ${inventoryEnsureResult.errorMsg}`,
-      );
-    }
 
     log.success(
       `[CharService] Created character "${characterName}" with ID ${newCharId}`,
@@ -647,90 +643,40 @@ class CharService extends BaseService {
   }
 
   Handle_SelectCharacterID(args, session, kwargs) {
-    const charId = resolveCharacterIdForSelection(args, kwargs, session);
-    log.info(
-      `[CharService] SelectCharacterID(${charId}) args=${JSON.stringify(args || [])}`,
-    );
+    let charId = args && args.length > 0 ? args[0] : 0;
+    if (charId === 0 && kwargs && kwargs.entries) {
+      const entry = kwargs.entries.find(
+        (candidate) => candidate[0] === "characterID",
+      );
+      if (entry) {
+        charId = entry[1];
+      }
+    }
+    log.info(`[CharService] SelectCharacterID(${charId})`);
 
     if (!session) {
       return null;
     }
 
-    const numericCharId = normalizeRpcInt(charId, 0);
-    if (numericCharId <= 0) {
-      log.warn("[CharService] SelectCharacterID failed to resolve a valid character ID");
-      return null;
-    }
-    ensureCharacterSkills(numericCharId);
-    const ensuredInventory = ensureCharacterInventory(numericCharId);
-    if (!ensuredInventory.success && ensuredInventory.errorMsg !== "CHARACTER_NOT_FOUND") {
-      log.warn(
-        `[CharService] Failed to ensure inventory for ${numericCharId}: ${ensuredInventory.errorMsg}`,
-      );
-    }
-    const previousPresence = snapshotSessionPresence(session);
-    const previousCharId = previousPresence ? previousPresence.characterID : 0;
-    const isCharacterSwitch =
-      previousCharId > 0 &&
-      numericCharId > 0 &&
-      previousCharId !== numericCharId;
-
-    if (isCharacterSwitch) {
-      const offlineResult = setCharacterOnlineState(previousCharId, false);
-      if (!offlineResult.success) {
-        log.warn(
-          `[CharService] Failed to mark previous character ${previousCharId} offline: ${offlineResult.errorMsg}`,
-        );
-      }
-
-      broadcastStationGuestEvent("OnCharNoLongerInStation", previousPresence, {
-        excludeSession: session,
-      });
-      removeCharacterFromChatRooms(previousCharId, {
-        notifySelf: false,
-        disconnectClient: true,
-      });
-    }
-
-    let applyResult = applyCharacterToSession(session, numericCharId, {
+    const applyResult = applyCharacterToSession(session, charId, {
       emitNotifications: true,
       logSelection: true,
     });
-    if (!applyResult.success && applyResult.errorMsg === "CHARACTER_NOT_FOUND") {
-      const verifyResult = database.read("characters", `/${String(numericCharId)}`);
-      if (verifyResult.success && verifyResult.data) {
-        ensureCharacterSkills(numericCharId);
-        ensureCharacterInventory(numericCharId);
-        applyResult = applyCharacterToSession(session, numericCharId, {
-          emitNotifications: true,
-          logSelection: true,
-        });
-      }
-    }
-    if (!applyResult.success && applyResult.errorMsg === "CHARACTER_NOT_FOUND") {
-      const fallbackCharId = resolveCharacterIdForSelection([], null, session);
-      if (fallbackCharId > 0 && fallbackCharId !== numericCharId) {
-        log.warn(
-          `[CharService] Retrying SelectCharacterID with fallback character ${fallbackCharId}`,
-        );
-        ensureCharacterSkills(fallbackCharId);
-        ensureCharacterInventory(fallbackCharId);
-        applyResult = applyCharacterToSession(session, fallbackCharId, {
-          emitNotifications: true,
-          logSelection: true,
-        });
-      }
-    }
 
     if (!applyResult.success) {
       log.warn(
-        `[CharService] Failed to select character ${numericCharId}: ${applyResult.errorMsg}`,
+        `[CharService] Failed to select character ${charId}: ${applyResult.errorMsg}`,
       );
-      return null;
+    } else if (!session.stationid && !session.stationID) {
+      restoreSpaceSession(session);
     }
+
     session.selectedCharacterID = session.characterID || numericCharId;
 
-    const selectedCharacterId = normalizeRpcInt(session.characterID || numericCharId, numericCharId);
+    const selectedCharacterId = normalizeRpcInt(
+      session.characterID || numericCharId,
+      numericCharId,
+    );
     const onlineResult = setCharacterOnlineState(selectedCharacterId, true, {
       stationID: session.stationid || session.stationID || null,
     });
@@ -751,7 +697,6 @@ class CharService extends BaseService {
         excludeSession: session,
       });
     }
-
     return null;
   }
 

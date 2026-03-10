@@ -1,8 +1,3 @@
-in-station multi-user support!
-    - (chat server) if you launch client on a seperate computer on your network, the client will try to connect to the SERVERS ip, not localhost.
-    - server broadcasts updated guests list to all connected clients,
-
-fixed up some stuff with newly created characters. not fully working, but its a start
-log off button works
-    - characters that log off will stay in chat
-    - (issue with chat server most likely)
+UNDOCKING!
+warning: you cannot redock if you are in a titan.
+added safe log off skeleton code, need to fix sessionChange on it

@@ -1,12 +1,14 @@
-const fs = require("fs");
 const path = require("path");
 
 const database = require(path.join(__dirname, "../../database"));
 const log = require(path.join(__dirname, "../../utils/logger"));
+const {
+  TABLE,
+  readStaticRows,
+} = require(path.join(__dirname, "../_shared/referenceData"));
 
 const CHARACTERS_TABLE = "characters";
 const SKILLS_TABLE = "skills";
-const SKILL_DATA_PATH = path.join(__dirname, "../../database/static/skillTypes.json");
 const SKILL_FLAG_ID = 7;
 const MAX_SKILL_LEVEL = 5;
 const MAX_SKILL_POINTS = 256000;
@@ -55,8 +57,7 @@ function loadSkillReference() {
   }
 
   try {
-    const payload = JSON.parse(fs.readFileSync(SKILL_DATA_PATH, "utf8"));
-    skillReferenceCache = Array.isArray(payload.skills) ? payload.skills : [];
+    skillReferenceCache = readStaticRows(TABLE.SKILL_TYPES);
   } catch (error) {
     log.warn(`[SkillState] Failed to load skill reference data: ${error.message}`);
     skillReferenceCache = [];

@@ -11,7 +11,6 @@
  * For empty results: empty tuple ().
  */
 
-const fs = require("fs");
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 
@@ -21,7 +20,10 @@ const { getCharacterShips } = require(path.join(
   __dirname,
   "../character/characterState",
 ));
-const shipData = require(path.join(__dirname, "../../database/static/shipTypes.json"));
+const {
+  TABLE,
+  readStaticRows,
+} = require(path.join(__dirname, "../_shared/referenceData"));
 const { buildKeyVal } = require(path.join(
   __dirname,
   "../_shared/serviceHelpers",
@@ -299,7 +301,7 @@ class ConfigService extends BaseService {
 
   Handle_GetAverageMarketPrices(args, session) {
     log.debug("[ConfigService] GetAverageMarketPrices");
-    const ships = Array.isArray(shipData) ? shipData : shipData.ships || [];
+    const ships = readStaticRows(TABLE.SHIP_TYPES);
     return {
       type: "dict",
       entries: ships

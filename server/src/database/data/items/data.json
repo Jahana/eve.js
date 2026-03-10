@@ -11,7 +11,18 @@
     "groupID": 237,
     "categoryID": 6,
     "customInfo": "",
-    "itemName": "Velator"
+    "itemName": "Velator",
+    "spaceState": null,
+    "conditionState": {
+      "damage": 0,
+      "charge": 1,
+      "armorDamage": 0,
+      "shieldCharge": 1,
+      "incapacitated": false
+    },
+    "shipID": 140000102,
+    "shipTypeID": 606,
+    "shipName": "Velator"
   },
   "140000103": {
     "itemID": 140000103,
@@ -29,54 +40,139 @@
   },
   "140000104": {
     "itemID": 140000104,
-    "typeID": 606,
+    "typeID": 24692,
     "ownerID": 140000003,
-    "locationID": 60003760,
-    "flagID": 4,
+    "locationID": 30000142,
+    "flagID": 0,
     "quantity": -1,
     "stacksize": 1,
     "singleton": 1,
-    "groupID": 237,
+    "groupID": 27,
     "categoryID": 6,
     "customInfo": "",
-    "itemName": "Velator",
+    "itemName": "Abaddon",
+    "spaceState": {
+      "systemID": 30000142,
+      "position": {
+        "x": -251919144.75898477,
+        "y": -44008338.03591462,
+        "z": -450587575.7507233
+      },
+      "velocity": {
+        "x": -10.594592012821973,
+        "y": -5.492538410190003,
+        "z": 85.582666818891
+      },
+      "direction": {
+        "x": -0.12260743217437921,
+        "y": -0.06356318674447661,
+        "z": 0.9904176588018269
+      },
+      "targetPoint": {
+        "x": -1226074573662901,
+        "y": -635631911453085.6,
+        "z": 9904176137430404
+      },
+      "speedFraction": 1,
+      "mode": "GOTO",
+      "targetEntityID": null,
+      "followRange": 0,
+      "orbitDistance": 0,
+      "orbitNormal": {
+        "x": -0.9999015170792751,
+        "y": 0,
+        "z": -0.014034106404192913
+      },
+      "orbitSign": 1,
+      "warpState": null
+    },
+    "conditionState": {
+      "damage": 0,
+      "charge": 1,
+      "armorDamage": 0,
+      "shieldCharge": 1,
+      "incapacitated": false
+    },
     "shipID": 140000104,
-    "shipTypeID": 606,
-    "shipName": "Velator"
+    "shipTypeID": 24692,
+    "shipName": "Abaddon"
   },
   "140000105": {
     "itemID": 140000105,
-    "typeID": 606,
-    "ownerID": 140000004,
+    "typeID": 23917,
+    "ownerID": 140000002,
     "locationID": 60003760,
     "flagID": 4,
     "quantity": -1,
     "stacksize": 1,
     "singleton": 1,
-    "groupID": 237,
+    "groupID": 659,
     "categoryID": 6,
     "customInfo": "",
-    "itemName": "Velator",
+    "itemName": "Wyvern",
+    "spaceState": null,
     "shipID": 140000105,
-    "shipTypeID": 606,
-    "shipName": "Velator"
+    "shipTypeID": 23917,
+    "shipName": "Wyvern"
   },
   "140000106": {
     "itemID": 140000106,
-    "typeID": 670,
-    "ownerID": 140000004,
-    "locationID": 60003760,
-    "flagID": 4,
+    "typeID": 24698,
+    "ownerID": 140000002,
+    "locationID": 30000142,
+    "flagID": 0,
     "quantity": -1,
     "stacksize": 1,
     "singleton": 1,
-    "groupID": 29,
+    "groupID": 419,
     "categoryID": 6,
     "customInfo": "",
-    "itemName": "Capsule",
+    "itemName": "Drake",
+    "spaceState": {
+      "systemID": 30000142,
+      "position": {
+        "x": -107303395732.68147,
+        "y": -18744947346.132763,
+        "z": 436489061217.8636
+      },
+      "velocity": {
+        "x": -136.0514982642105,
+        "y": 12.679173744969207,
+        "z": -61.8807593110971
+      },
+      "direction": {
+        "x": -0.9070099884339248,
+        "y": 0.08452782496700702,
+        "z": -0.412538395409977
+      },
+      "targetPoint": {
+        "x": -9070207187710128,
+        "y": 845259504720408,
+        "z": -4124947465027249
+      },
+      "speedFraction": 1,
+      "mode": "GOTO",
+      "targetEntityID": null,
+      "followRange": 0,
+      "orbitDistance": 0,
+      "orbitNormal": {
+        "x": -0.9626960792847759,
+        "y": 0,
+        "z": -0.27058503086778635
+      },
+      "orbitSign": 1,
+      "warpState": null
+    },
+    "conditionState": {
+      "damage": 0,
+      "charge": 1,
+      "armorDamage": 0,
+      "shieldCharge": 1,
+      "incapacitated": false
+    },
     "shipID": 140000106,
-    "shipTypeID": 670,
-    "shipName": "Capsule"
+    "shipTypeID": 24698,
+    "shipName": "Drake"
   },
   "140000114": {
     "itemID": 140000114,
@@ -90,7 +186,11 @@
     "groupID": 659,
     "categoryID": 6,
     "customInfo": "",
-    "itemName": "Wyvern"
+    "itemName": "Wyvern",
+    "spaceState": null,
+    "shipID": 140000114,
+    "shipTypeID": 23917,
+    "shipName": "Wyvern"
   },
   "140000115": {
     "itemID": 140000115,
@@ -142,5 +242,292 @@
     "shipID": 140000117,
     "shipTypeID": 24698,
     "shipName": "Drake"
+  },
+  "140000118": {
+    "itemID": 140000118,
+    "typeID": 2006,
+    "ownerID": 140000001,
+    "locationID": 60003760,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 26,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Omen",
+    "shipID": 140000118,
+    "shipTypeID": 2006,
+    "shipName": "Omen"
+  },
+  "140000119": {
+    "itemID": 140000119,
+    "typeID": 11987,
+    "ownerID": 140000001,
+    "locationID": 60003760,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 832,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Guardian",
+    "spaceState": null,
+    "shipID": 140000119,
+    "shipTypeID": 11987,
+    "shipName": "Guardian"
+  },
+  "140000120": {
+    "itemID": 140000120,
+    "typeID": 24692,
+    "ownerID": 140000001,
+    "locationID": 60003760,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 27,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Abaddon",
+    "shipID": 140000120,
+    "shipTypeID": 24692,
+    "shipName": "Abaddon"
+  },
+  "140000121": {
+    "itemID": 140000121,
+    "typeID": 11567,
+    "ownerID": 140000001,
+    "locationID": 30000142,
+    "flagID": 0,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 30,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Avatar",
+    "spaceState": {
+      "systemID": 30000142,
+      "position": {
+        "x": -107303367614.20282,
+        "y": -18744968684.6064,
+        "z": 436489112457.57874
+      },
+      "velocity": {
+        "x": -3.051854980366992,
+        "y": -5.651583313039667,
+        "z": 57.87221437498579
+      },
+      "direction": {
+        "x": -0.052412561694353425,
+        "y": -0.09706029970986678,
+        "z": 0.9938974904872567
+      },
+      "targetPoint": {
+        "x": -524232920310745.8,
+        "y": -970621742066606.8,
+        "z": 9939411393977390
+      },
+      "speedFraction": 1,
+      "mode": "GOTO",
+      "targetEntityID": null,
+      "followRange": 0,
+      "orbitDistance": 0,
+      "orbitNormal": {
+        "x": -0.9999015170792751,
+        "y": 0,
+        "z": -0.014034106404192913
+      },
+      "orbitSign": 1,
+      "warpState": null
+    },
+    "conditionState": {
+      "damage": 0,
+      "charge": 1,
+      "armorDamage": 0,
+      "shieldCharge": 1,
+      "incapacitated": false
+    },
+    "shipID": 140000121,
+    "shipTypeID": 11567,
+    "shipName": "Avatar"
+  },
+  "140000122": {
+    "itemID": 140000122,
+    "typeID": 645,
+    "ownerID": 140000001,
+    "locationID": 60003466,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 27,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Dominix",
+    "spaceState": null,
+    "shipID": 140000122,
+    "shipTypeID": 645,
+    "shipName": "Dominix"
+  },
+  "140000123": {
+    "itemID": 140000123,
+    "typeID": 597,
+    "ownerID": 140000001,
+    "locationID": 60003760,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 25,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Punisher",
+    "spaceState": null,
+    "shipID": 140000123,
+    "shipTypeID": 597,
+    "shipName": "Punisher"
+  },
+  "140000124": {
+    "itemID": 140000124,
+    "typeID": 597,
+    "ownerID": 140000001,
+    "locationID": 60003760,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 25,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Punisher",
+    "spaceState": null,
+    "shipID": 140000124,
+    "shipTypeID": 597,
+    "shipName": "Punisher"
+  },
+  "140000125": {
+    "itemID": 140000125,
+    "typeID": 3764,
+    "ownerID": 140000001,
+    "locationID": 60003760,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 30,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Leviathan",
+    "shipID": 140000125,
+    "shipTypeID": 3764,
+    "shipName": "Leviathan"
+  },
+  "140000126": {
+    "itemID": 140000126,
+    "typeID": 642,
+    "ownerID": 140000001,
+    "locationID": 60003760,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 27,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Apocalypse",
+    "shipID": 140000126,
+    "shipTypeID": 642,
+    "shipName": "Apocalypse"
+  },
+  "140000127": {
+    "itemID": 140000127,
+    "typeID": 17726,
+    "ownerID": 140000001,
+    "locationID": 30000142,
+    "flagID": 0,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 27,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Apocalypse Navy Issue",
+    "spaceState": {
+      "systemID": 30000142,
+      "position": {
+        "x": -107303356630.89636,
+        "y": -18744976989.42188,
+        "z": 436489047042.3136
+      },
+      "velocity": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "direction": {
+        "x": -0.741137955753073,
+        "y": 0.20367773508210693,
+        "z": 0.6397108024521544
+      },
+      "targetPoint": {
+        "x": -107303362560,
+        "y": -18744975360,
+        "z": 436489052160
+      },
+      "speedFraction": 0,
+      "mode": "STOP",
+      "targetEntityID": null,
+      "followRange": 0,
+      "orbitDistance": 0,
+      "orbitNormal": {
+        "x": 0.6888808339227056,
+        "y": 0,
+        "z": 0.7248746075384058
+      },
+      "orbitSign": 1,
+      "warpState": null
+    },
+    "shipID": 140000127,
+    "shipTypeID": 17726,
+    "shipName": "Apocalypse Navy Issue"
+  },
+  "140000128": {
+    "itemID": 140000128,
+    "typeID": 24692,
+    "ownerID": 140000001,
+    "locationID": 60003760,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 27,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Abaddon",
+    "spaceState": null,
+    "shipID": 140000128,
+    "shipTypeID": 24692,
+    "shipName": "Abaddon"
+  },
+  "140000129": {
+    "itemID": 140000129,
+    "typeID": 3764,
+    "ownerID": 140000001,
+    "locationID": 60003466,
+    "flagID": 4,
+    "quantity": -1,
+    "stacksize": 1,
+    "singleton": 1,
+    "groupID": 30,
+    "categoryID": 6,
+    "customInfo": "",
+    "itemName": "Leviathan",
+    "spaceState": null,
+    "shipID": 140000129,
+    "shipTypeID": 3764,
+    "shipName": "Leviathan"
   }
 }

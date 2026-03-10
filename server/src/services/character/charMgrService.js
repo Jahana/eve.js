@@ -8,7 +8,13 @@
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
-const { getCharacterRecord } = require(path.join(__dirname, "./characterState"));
+const {
+  getCharacterRecord,
+  resolveHomeStationInfo,
+} = require(path.join(__dirname, "./characterState"));
+const {
+  getStationRecord,
+} = require(path.join(__dirname, "../_shared/stationStaticData"));
 const {
   buildDict,
   buildFiletimeLong,
@@ -25,6 +31,43 @@ function resolveCharacterInfo(args, session) {
     charId,
     charData: getCharacterRecord(charId) || {},
   };
+}
+
+function resolveHomeStationRecord(charData, session) {
+  const homeStationInfo = resolveHomeStationInfo(charData, session);
+
+  return {
+    station: getStationRecord(session, homeStationInfo.homeStationID),
+    homeStationInfo,
+  };
+}
+
+function buildHomeStationPayload(station, homeStationInfo = {}) {
+  return buildKeyVal([
+    ["id", station.stationID],
+    ["station_id", station.stationID],
+    ["stationID", station.stationID],
+    ["home_station_id", station.stationID],
+    ["type_id", station.stationTypeID],
+    ["typeID", station.stationTypeID],
+    ["station_type_id", station.stationTypeID],
+    ["name", station.stationName],
+    ["station_name", station.stationName],
+    ["stationName", station.stationName],
+    ["solar_system_id", station.solarSystemID],
+    ["solarSystemID", station.solarSystemID],
+    ["constellation_id", station.constellationID],
+    ["constellationID", station.constellationID],
+    ["region_id", station.regionID],
+    ["regionID", station.regionID],
+    ["owner_id", station.ownerID],
+    ["ownerID", station.ownerID],
+    ["clone_station_id", homeStationInfo.cloneStationID || station.stationID],
+    ["cloneStationID", homeStationInfo.cloneStationID || station.stationID],
+    ["is_fallback", Boolean(homeStationInfo.isFallback)],
+    ["isFallback", Boolean(homeStationInfo.isFallback)],
+    ["stationTypeID", station.stationTypeID],
+  ]);
 }
 
 class CharMgrService extends BaseService {
@@ -56,14 +99,17 @@ class CharMgrService extends BaseService {
       ["factionID", factionID],
       ["empireID", empireID],
       ["schoolID", charData.schoolID ?? charData.corporationID ?? null],
-      ["gender", charData.gender ?? 1],
+      ["gender", charData.gender || 1],
       ["createDateTime", buildFiletimeLong(charData.createDateTime)],
       ["description", charData.description || ""],
       ["securityRating", Number(charData.securityStatus ?? charData.securityRating ?? 0)],
       ["securityStatus", Number(charData.securityStatus ?? charData.securityRating ?? 0)],
       ["bounty", Number(charData.bounty || 0)],
       ["title", charData.title || ""],
-      ["stationID", charData.stationID || (session ? session.stationID : 60003760)],
+      [
+        "stationID",
+        charData.stationID ?? (session ? (session.stationID ?? session.stationid ?? null) : null),
+      ],
       ["solarSystemID", charData.solarSystemID || (session ? session.solarsystemid2 : 30000142)],
     ]);
   }
@@ -94,7 +140,7 @@ class CharMgrService extends BaseService {
       ],
       [
         charId,
-        charData.gender ?? 1,
+        charData.gender || 1,
         buildFiletimeLong(charData.createDateTime),
         charData.raceID || 1,
         charData.bloodlineID || 1,
@@ -114,13 +160,14 @@ class CharMgrService extends BaseService {
   Handle_GetCloneInfo(args, session) {
     log.debug("[CharMgr] GetCloneInfo");
     const { charData } = resolveCharacterInfo(args, session);
-    const stationId =
-      charData.stationID ||
-      (session ? session.stationID || session.stationid : 60003760);
+    const { station, homeStationInfo } = resolveHomeStationRecord(charData, session);
 
     return buildKeyVal([
-      ["homeStationID", stationId],
-      ["cloneStationID", stationId],
+      ["homeStationID", station.stationID],
+      [
+        "cloneStationID",
+        Number(homeStationInfo.cloneStationID || station.stationID) || station.stationID,
+      ],
       ["clones", buildDict([])],
       ["implants", buildDict([])],
       ["timeLastJump", buildFiletimeLong(0n)],
@@ -130,7 +177,8 @@ class CharMgrService extends BaseService {
   Handle_GetHomeStation(args, session) {
     log.debug("[CharMgr] GetHomeStation");
     const { charData } = resolveCharacterInfo(args, session);
-    return charData.stationID || (session ? session.stationID : 60003760);
+    const { station, homeStationInfo } = resolveHomeStationRecord(charData, session);
+    return buildHomeStationPayload(station, homeStationInfo);
   }
 
   Handle_LogStartOfCharacterCreation() {

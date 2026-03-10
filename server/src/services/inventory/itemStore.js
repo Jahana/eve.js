@@ -18,6 +18,13 @@ const ITEM_FLAGS = {
   DRONE_BAY: 87,
   SHIP_HANGAR: 90,
 };
+const DEFAULT_SHIP_CONDITION_STATE = Object.freeze({
+  damage: 0.0,
+  charge: 1.0,
+  armorDamage: 0.0,
+  shieldCharge: 1.0,
+  incapacitated: false,
+});
 
 let migrationComplete = false;
 
@@ -58,6 +65,113 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
 }
 
+function toFiniteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function normalizeSpaceVector(rawValue, fallback = { x: 0, y: 0, z: 0 }) {
+  if (!rawValue || typeof rawValue !== "object") {
+    return {
+      x: fallback.x,
+      y: fallback.y,
+      z: fallback.z,
+    };
+  }
+
+  return {
+    x: toFiniteNumber(rawValue.x, fallback.x),
+    y: toFiniteNumber(rawValue.y, fallback.y),
+    z: toFiniteNumber(rawValue.z, fallback.z),
+  };
+}
+
+function normalizeSpaceState(rawValue) {
+  if (!rawValue || typeof rawValue !== "object") {
+    return null;
+  }
+
+  const normalizedMode = ["GOTO", "FOLLOW", "WARP", "ORBIT"].includes(rawValue.mode)
+    ? rawValue.mode
+    : "STOP";
+
+  return {
+    systemID: toNumber(rawValue.systemID, 0),
+    position: normalizeSpaceVector(rawValue.position),
+    velocity: normalizeSpaceVector(rawValue.velocity),
+    direction: normalizeSpaceVector(rawValue.direction, { x: 1, y: 0, z: 0 }),
+    targetPoint: rawValue.targetPoint
+      ? normalizeSpaceVector(rawValue.targetPoint)
+      : null,
+    speedFraction: toFiniteNumber(rawValue.speedFraction, 0),
+    mode: normalizedMode,
+    targetEntityID: rawValue.targetEntityID
+      ? toNumber(rawValue.targetEntityID, 0)
+      : null,
+    followRange: toFiniteNumber(rawValue.followRange, 0),
+    orbitDistance: toFiniteNumber(rawValue.orbitDistance, 0),
+    orbitNormal: rawValue.orbitNormal
+      ? normalizeSpaceVector(rawValue.orbitNormal, { x: 0, y: 1, z: 0 })
+      : null,
+    orbitSign: toFiniteNumber(rawValue.orbitSign, 1) < 0 ? -1 : 1,
+    warpState:
+      rawValue.warpState && typeof rawValue.warpState === "object"
+        ? {
+            startTimeMs: toFiniteNumber(rawValue.warpState.startTimeMs, Date.now()),
+            durationMs: toFiniteNumber(rawValue.warpState.durationMs, 0),
+            accelTimeMs: toFiniteNumber(rawValue.warpState.accelTimeMs, 0),
+            cruiseTimeMs: toFiniteNumber(rawValue.warpState.cruiseTimeMs, 0),
+            decelTimeMs: toFiniteNumber(rawValue.warpState.decelTimeMs, 0),
+            totalDistance: toFiniteNumber(rawValue.warpState.totalDistance, 0),
+            stopDistance: toFiniteNumber(rawValue.warpState.stopDistance, 0),
+            maxWarpSpeedMs: toFiniteNumber(rawValue.warpState.maxWarpSpeedMs, 0),
+            warpSpeed: toNumber(rawValue.warpState.warpSpeed, 0),
+            effectStamp: toNumber(rawValue.warpState.effectStamp, 0),
+            targetEntityID: rawValue.warpState.targetEntityID
+              ? toNumber(rawValue.warpState.targetEntityID, 0)
+              : null,
+            followID: rawValue.warpState.followID
+              ? toNumber(rawValue.warpState.followID, 0)
+              : null,
+            followRangeMarker: toFiniteNumber(
+              rawValue.warpState.followRangeMarker,
+              rawValue.warpState.stopDistance,
+            ),
+            origin: rawValue.warpState.origin
+              ? normalizeSpaceVector(rawValue.warpState.origin)
+              : null,
+            rawDestination: rawValue.warpState.rawDestination
+              ? normalizeSpaceVector(rawValue.warpState.rawDestination)
+              : null,
+            targetPoint: rawValue.warpState.targetPoint
+              ? normalizeSpaceVector(rawValue.warpState.targetPoint)
+              : null,
+          }
+        : null,
+  };
+}
+
+function normalizeShipConditionState(rawValue) {
+  const source =
+    rawValue && typeof rawValue === "object" ? rawValue : DEFAULT_SHIP_CONDITION_STATE;
+
+  return {
+    damage: toFiniteNumber(source.damage, DEFAULT_SHIP_CONDITION_STATE.damage),
+    charge: toFiniteNumber(source.charge, DEFAULT_SHIP_CONDITION_STATE.charge),
+    armorDamage: toFiniteNumber(
+      source.armorDamage,
+      DEFAULT_SHIP_CONDITION_STATE.armorDamage,
+    ),
+    shieldCharge: toFiniteNumber(
+      source.shieldCharge,
+      DEFAULT_SHIP_CONDITION_STATE.shieldCharge,
+    ),
+    incapacitated: Boolean(
+      source.incapacitated ?? DEFAULT_SHIP_CONDITION_STATE.incapacitated,
+    ),
+  };
+}
+
 function getShipMetadata(typeID, name = null) {
   const resolvedTypeID = toNumber(typeID, DEFAULT_SHIP_TYPE_ID);
   return (
@@ -81,6 +195,8 @@ function buildShipItem({
   stacksize = 1,
   singleton = null,
   customInfo = "",
+  spaceState = null,
+  conditionState = null,
 }) {
   const metadata = getShipMetadata(typeID, itemName);
   const normalizedSingleton =
@@ -105,7 +221,13 @@ function buildShipItem({
     categoryID: toNumber(metadata.categoryID, SHIP_CATEGORY_ID),
     customInfo: String(customInfo || ""),
     itemName: metadata.name || itemName || "Ship",
+    spaceState: normalizeSpaceState(spaceState),
+    conditionState: normalizeShipConditionState(conditionState),
   };
+
+  if (item.flagID !== 0) {
+    item.spaceState = null;
+  }
 
   return {
     ...item,
@@ -137,6 +259,12 @@ function normalizeShipItem(rawItem, defaults = {}) {
     stacksize: rawItem.stacksize ?? defaults.stacksize ?? 1,
     singleton: rawItem.singleton ?? defaults.singleton ?? null,
     customInfo: rawItem.customInfo ?? defaults.customInfo ?? "",
+    spaceState: Object.prototype.hasOwnProperty.call(rawItem, "spaceState")
+      ? rawItem.spaceState
+      : defaults.spaceState ?? null,
+    conditionState: Object.prototype.hasOwnProperty.call(rawItem, "conditionState")
+      ? rawItem.conditionState
+      : defaults.conditionState ?? null,
   });
 }
 
@@ -195,107 +323,6 @@ function nextItemID(charId, items, characterRecord = null) {
   return maxItemID + 1;
 }
 
-function ensureCharacterShipState(charId, characters, items) {
-  const charKey = String(charId);
-  const rawRecord = characters[charKey];
-  if (!rawRecord || typeof rawRecord !== "object") {
-    return {
-      itemsDirty: false,
-      characterDirty: false,
-    };
-  }
-
-  const stationID = toNumber(rawRecord.stationID, 60003760);
-  const legacyShips = collectLegacyShips(charId, rawRecord);
-  let itemsDirty = false;
-
-  for (const legacyShip of legacyShips) {
-    if (items[String(legacyShip.itemID)]) {
-      continue;
-    }
-
-    const normalizedLegacyShip = normalizeShipItem(legacyShip, {
-      ownerID: charId,
-      locationID: stationID,
-      flagID: ITEM_FLAGS.HANGAR,
-    });
-    if (!normalizedLegacyShip) {
-      continue;
-    }
-
-    items[String(legacyShip.itemID)] = normalizedLegacyShip;
-    itemsDirty = true;
-  }
-
-  let characterShipItems = Object.values(items)
-    .map((entry) => normalizeShipItem(entry))
-    .filter(
-      (entry) =>
-        entry &&
-        entry.ownerID === charId &&
-        entry.categoryID === SHIP_CATEGORY_ID,
-    )
-    .sort((left, right) => left.itemID - right.itemID);
-
-  if (characterShipItems.length === 0) {
-    const starterShip = buildShipItem({
-      itemID: nextItemID(charId, items, rawRecord),
-      typeID: rawRecord.shipTypeID || DEFAULT_SHIP_TYPE_ID,
-      ownerID: charId,
-      locationID: stationID,
-      flagID: ITEM_FLAGS.HANGAR,
-      itemName: rawRecord.shipName || null,
-    });
-    items[String(starterShip.itemID)] = starterShip;
-    itemsDirty = true;
-    characterShipItems = [starterShip];
-  }
-
-  let activeShip =
-    characterShipItems.find(
-      (entry) => entry.itemID === toNumber(rawRecord.shipID, 0),
-    ) || characterShipItems[0];
-  if (
-    activeShip &&
-    (activeShip.singleton !== 1 || activeShip.quantity !== -1 || activeShip.stacksize !== 1)
-  ) {
-    const activeShipKey = String(activeShip.itemID);
-    const assembledShip = {
-      ...activeShip,
-      singleton: 1,
-      quantity: -1,
-      stacksize: 1,
-    };
-    items[activeShipKey] = assembledShip;
-    itemsDirty = true;
-    activeShip = assembledShip;
-  }
-
-  const nextRecord = {
-    ...rawRecord,
-    shipID: activeShip.itemID,
-    shipTypeID: activeShip.typeID,
-    shipName: activeShip.itemName,
-  };
-
-  if (Object.prototype.hasOwnProperty.call(nextRecord, "storedShips")) {
-    delete nextRecord.storedShips;
-  }
-
-  if (JSON.stringify(rawRecord) === JSON.stringify(nextRecord)) {
-    return {
-      itemsDirty,
-      characterDirty: false,
-    };
-  }
-
-  characters[charKey] = nextRecord;
-  return {
-    itemsDirty,
-    characterDirty: true,
-  };
-}
-
 function ensureMigrated() {
   if (migrationComplete) {
     return;
@@ -306,11 +333,66 @@ function ensureMigrated() {
   let itemsDirty = false;
   let charactersDirty = false;
 
-  for (const [charIdKey] of Object.entries(characters)) {
+  for (const [charIdKey, rawRecord] of Object.entries(characters)) {
     const charId = toNumber(charIdKey, 0);
-    const ensured = ensureCharacterShipState(charId, characters, items);
-    itemsDirty = itemsDirty || ensured.itemsDirty;
-    charactersDirty = charactersDirty || ensured.characterDirty;
+    const stationID = toNumber(rawRecord.stationID, 60003760);
+    const legacyShips = collectLegacyShips(charId, rawRecord);
+
+    for (const legacyShip of legacyShips) {
+      if (!items[String(legacyShip.itemID)]) {
+        items[String(legacyShip.itemID)] = normalizeShipItem(legacyShip, {
+          ownerID: charId,
+          locationID: stationID,
+          flagID: ITEM_FLAGS.HANGAR,
+        });
+        itemsDirty = true;
+      }
+    }
+
+    let characterShipItems = Object.values(items)
+      .map((entry) => normalizeShipItem(entry))
+      .filter(
+        (entry) =>
+          entry &&
+          entry.ownerID === charId &&
+          entry.categoryID === SHIP_CATEGORY_ID,
+      )
+      .sort((left, right) => left.itemID - right.itemID);
+
+    if (characterShipItems.length === 0) {
+      const starterShip = buildShipItem({
+        itemID: nextItemID(charId, items, rawRecord),
+        typeID: rawRecord.shipTypeID || DEFAULT_SHIP_TYPE_ID,
+        ownerID: charId,
+        locationID: stationID,
+        flagID: ITEM_FLAGS.HANGAR,
+        itemName: rawRecord.shipName || null,
+      });
+      items[String(starterShip.itemID)] = starterShip;
+      itemsDirty = true;
+      characterShipItems = [starterShip];
+    }
+
+    const activeShip =
+      characterShipItems.find(
+        (entry) => entry.itemID === toNumber(rawRecord.shipID, 0),
+      ) || characterShipItems[0];
+
+    const nextRecord = {
+      ...rawRecord,
+      shipID: activeShip.itemID,
+      shipTypeID: activeShip.typeID,
+      shipName: activeShip.itemName,
+    };
+
+    if (Object.prototype.hasOwnProperty.call(nextRecord, "storedShips")) {
+      delete nextRecord.storedShips;
+    }
+
+    if (JSON.stringify(rawRecord) !== JSON.stringify(nextRecord)) {
+      characters[charIdKey] = nextRecord;
+      charactersDirty = true;
+    }
   }
 
   if (itemsDirty && !writeItems(items)) {
@@ -324,49 +406,6 @@ function ensureMigrated() {
   migrationComplete = true;
 }
 
-function ensureCharacterInventory(charId) {
-  ensureMigrated();
-
-  const numericCharId = toNumber(charId, 0);
-  if (numericCharId <= 0) {
-    return {
-      success: false,
-      errorMsg: "CHARACTER_NOT_FOUND",
-    };
-  }
-
-  const characters = readCharacters();
-  if (!characters[String(numericCharId)]) {
-    return {
-      success: false,
-      errorMsg: "CHARACTER_NOT_FOUND",
-    };
-  }
-
-  const items = readItems();
-  const ensured = ensureCharacterShipState(numericCharId, characters, items);
-
-  if (ensured.itemsDirty && !writeItems(items)) {
-    return {
-      success: false,
-      errorMsg: "WRITE_ERROR",
-    };
-  }
-
-  if (ensured.characterDirty && !writeCharacters(characters)) {
-    return {
-      success: false,
-      errorMsg: "WRITE_ERROR",
-    };
-  }
-
-  return {
-    success: true,
-    changed: ensured.itemsDirty || ensured.characterDirty,
-    data: cloneValue(characters[String(numericCharId)]),
-  };
-}
-
 function getAllItems() {
   ensureMigrated();
   return cloneValue(readItems());
@@ -375,7 +414,6 @@ function getAllItems() {
 function listCharacterShipItems(charId, options = {}) {
   ensureMigrated();
   const numericCharId = toNumber(charId, 0);
-  ensureCharacterInventory(numericCharId);
   const locationID =
     options.locationID === undefined || options.locationID === null
       ? null
@@ -449,7 +487,6 @@ function findCharacterShipByType(charId, typeId, stationId = null) {
 
 function getActiveShipItem(charId) {
   ensureMigrated();
-  ensureCharacterInventory(charId);
   const characters = readCharacters();
   const record = characters[String(charId)];
   if (!record) {
@@ -501,7 +538,6 @@ function syncCharacterActiveShip(charId, shipItem) {
 
 function createShipItemForCharacter(charId, stationId, shipType) {
   ensureMigrated();
-  ensureCharacterInventory(charId);
   const characters = readCharacters();
   const items = readItems();
   const record = characters[String(charId)];
@@ -588,6 +624,28 @@ function setShipPackagingState(shipId, packaged) {
   }));
 }
 
+function moveShipToSpace(shipId, solarSystemId, spaceState) {
+  return updateShipItem(shipId, (currentItem) => ({
+    ...currentItem,
+    locationID: toNumber(solarSystemId, currentItem.locationID),
+    flagID: 0,
+    spaceState: normalizeSpaceState({
+      ...(spaceState || {}),
+      systemID: toNumber(solarSystemId, currentItem.locationID),
+    }),
+    conditionState: normalizeShipConditionState(currentItem.conditionState),
+  }));
+}
+
+function dockShipToStation(shipId, stationId) {
+  return updateShipItem(shipId, (currentItem) => ({
+    ...currentItem,
+    locationID: toNumber(stationId, currentItem.locationID),
+    flagID: ITEM_FLAGS.HANGAR,
+    spaceState: null,
+  }));
+}
+
 function spawnShipInStationHangar(charId, stationId, shipType) {
   ensureMigrated();
   const createResult = createShipItemForCharacter(charId, stationId, shipType);
@@ -658,13 +716,16 @@ function listContainerItems(ownerId, locationId, flagId = null) {
     .map((entry) => cloneValue(entry));
 }
 
+function getShipConditionState(shipItem) {
+  return normalizeShipConditionState(shipItem && shipItem.conditionState);
+}
+
 module.exports = {
   ITEMS_TABLE,
   ITEM_FLAGS,
   SHIP_CATEGORY_ID,
   CAPSULE_TYPE_ID,
   ensureMigrated,
-  ensureCharacterInventory,
   getAllItems,
   getCharacterShipItems,
   getCharacterHangarShipItems,
@@ -675,9 +736,13 @@ module.exports = {
   spawnShipInStationHangar,
   updateShipItem,
   setShipPackagingState,
+  moveShipToSpace,
+  dockShipToStation,
   setActiveShipForCharacter,
   ensureCapsuleForCharacter,
   listContainerItems,
   buildShipItem,
   normalizeShipItem,
+  getShipConditionState,
+  normalizeShipConditionState,
 };

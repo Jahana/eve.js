@@ -27,10 +27,6 @@ const {
   getCharacterSkills,
   SKILL_FLAG_ID,
 } = require(path.join(__dirname, "../skills/skillState"));
-const { resolveSessionCharacterId } = require(path.join(
-  __dirname,
-  "../_shared/characterResolver",
-));
 
 const inventoryDebugPath = path.join(
   __dirname,
@@ -100,7 +96,10 @@ class InvBrokerService extends BaseService {
   }
 
   _getCharacterId(session) {
-    return resolveSessionCharacterId(session);
+    return (
+      (session && (session.characterID || session.charid || session.userid)) ||
+      140000001
+    );
   }
 
   _getShipId(session) {
@@ -377,27 +376,6 @@ class InvBrokerService extends BaseService {
     };
   }
 
-  _getStationHangarItems(session, stationId, requestedFlag = null) {
-    const charId = this._getCharacterId(session);
-    const normalizedRequestedFlag =
-      requestedFlag === null || requestedFlag === undefined
-        ? ITEM_FLAGS.HANGAR
-        : this._normalizeInventoryId(requestedFlag, ITEM_FLAGS.HANGAR);
-    const effectiveFlag =
-      normalizedRequestedFlag === 0
-        ? ITEM_FLAGS.HANGAR
-        : normalizedRequestedFlag;
-    let items = listContainerItems(charId, stationId, effectiveFlag);
-
-    // Some inventory views request alternate station flags (for example 36)
-    // while still expecting standard hangar items.
-    if (items.length === 0 && effectiveFlag !== ITEM_FLAGS.HANGAR) {
-      items = listContainerItems(charId, stationId, ITEM_FLAGS.HANGAR);
-    }
-
-    return items;
-  }
-
   _resolveContainerItems(session, requestedFlag, boundContext) {
     const stationId = this._getStationId(session);
     const charId = this._getCharacterId(session);
@@ -414,7 +392,13 @@ class InvBrokerService extends BaseService {
     }
 
     if (containerID === stationId) {
-      return this._getStationHangarItems(session, stationId, numericFlag);
+      return listContainerItems(
+        charId,
+        stationId,
+        numericFlag === null || numericFlag === 0
+          ? ITEM_FLAGS.HANGAR
+          : numericFlag,
+      );
     }
 
     return listContainerItems(

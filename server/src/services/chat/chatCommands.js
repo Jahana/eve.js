@@ -15,8 +15,9 @@ const {
 const { resolveShipByName } = require("./shipTypeRegistry");
 
 const DEFAULT_MOTD_MESSAGE = [
-  "Welcome to eve.js!",
+  "Welcome to EvEJS.",
   "This emulator build is still work in progress.",
+  "Local chat and slash commands are enabled.",
   "Use /help to see the current command list.",
 ].join(" ");
 const AVAILABLE_SLASH_COMMANDS = [

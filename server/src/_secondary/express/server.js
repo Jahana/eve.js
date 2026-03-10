@@ -8,8 +8,24 @@ const crypto = require("crypto");
 const config = require("../../config");
 const log = require("../../utils/logger");
 
-const ENABLE_LOCAL_INTERCEPT = false;
-const LOCAL_INTERCEPT_HOSTS = new Set(["dev-public-gateway.evetech.net"]);
+const ENABLE_LOCAL_INTERCEPT = true;
+const LOCAL_INTERCEPT_HOSTS = new Set([
+  "dev-public-gateway.evetech.net",
+  "public-gateway.evetech.net",
+]);
+
+function shouldInterceptHost(hostname) {
+  const normalized = String(hostname || "").trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    LOCAL_INTERCEPT_HOSTS.has(normalized) ||
+    normalized.endsWith(".evetech.net") ||
+    normalized.endsWith(".eveonline.com")
+  );
+}
 
 function makeResponsePayload(req) {
   return {
@@ -302,6 +318,12 @@ function startServer() {
       return;
     }
 
+    if (targetUrl && shouldInterceptHost(targetUrl.hostname)) {
+      console.log(
+        `[HTTP PROXY INTERCEPT] ${req.method} ${targetUrl.href} -> LOCAL STUB`,
+      );
+    }
+
     console.log("---- HTTP REQUEST ----");
     console.log("URL:", req.url);
     console.log("METHOD:", req.method);
@@ -340,7 +362,7 @@ function startServer() {
       return;
     }
 
-    const interceptLocal = ENABLE_LOCAL_INTERCEPT && LOCAL_INTERCEPT_HOSTS.has(host);
+    const interceptLocal = ENABLE_LOCAL_INTERCEPT && shouldInterceptHost(host);
     const connectHost = interceptLocal ? "127.0.0.1" : host;
     const connectPort = interceptLocal ? httpsPort : port;
 
@@ -383,7 +405,7 @@ function startServer() {
 }
 
 module.exports = {
-  enabled: false,
+  enabled: true,
   serviceName: "expressServer",
   exec() {
     startServer();

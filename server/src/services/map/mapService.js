@@ -7,12 +7,9 @@
  */
 
 const path = require("path");
+const fs = require("fs");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
-const { getCharacterRecord } = require(path.join(
-  __dirname,
-  "../character/characterState",
-));
 
 class MapService extends BaseService {
   constructor() {
@@ -62,17 +59,6 @@ class MapService extends BaseService {
   }
 
   Handle_GetStationInfo(args, session) {
-    const characterId = Number(session ? session.characterID || session.charid || 0 : 0);
-    const characterRecord = characterId > 0 ? getCharacterRecord(characterId) : null;
-    const online = Boolean(characterRecord && characterRecord.online);
-    const stationID = session ? session.stationid || session.stationID || null : null;
-    const solarSystemID = session
-      ? session.solarsystemid2 || session.solarsystemid || null
-      : null;
-    const lines = characterId > 0
-      ? [[characterId, online, stationID, solarSystemID]]
-      : [];
-
     return {
       type: "object",
       name: "eve.common.script.sys.rowset.Rowset",
@@ -93,7 +79,14 @@ class MapService extends BaseService {
             "lines",
             {
               type: "list",
-              items: lines,
+              items: [
+                [
+                  session.characterID, // fix: change session.charid to session.characterID to fix null character
+                  true,
+                  session.stationid,
+                  session.solarsystemid2,
+                ],
+              ],
             },
           ],
         ],

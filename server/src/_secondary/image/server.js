@@ -6,13 +6,30 @@ const log = require("../../utils/logger");
 
 function startImageServer() {
   const server = http.createServer((req, res) => {
-    const url = req.url;
+    const url = String(req.url || "/");
+    const normalizedUrl = url.toLowerCase();
 
     log.debug(`image request: ${url}`);
 
-    // dev mode: always return same image
-    // client expects jpeg file!
-    const filePath = path.join(__dirname, "images", "CAT.jpeg");
+    let filePath = path.join(__dirname, "images", "CAT.jpeg");
+    let contentType = "image/jpeg";
+
+    if (
+      normalizedUrl.includes("/character/") ||
+      normalizedUrl.includes("/portrait/")
+    ) {
+      filePath = path.join(__dirname, "images", "hi.jpg");
+      contentType = "image/jpeg";
+    } else if (
+      normalizedUrl.includes("/corporation/") ||
+      normalizedUrl.includes("/alliance/")
+    ) {
+      filePath = path.join(__dirname, "images", "hi.png");
+      contentType = "image/png";
+    } else if (normalizedUrl.endsWith(".png")) {
+      filePath = path.join(__dirname, "images", "hi.png");
+      contentType = "image/png";
+    }
 
     if (!fs.existsSync(filePath)) {
       res.writeHead(404);
@@ -23,8 +40,9 @@ function startImageServer() {
     const data = fs.readFileSync(filePath);
 
     res.writeHead(200, {
-      "Content-Type": "image/jpeg",
+      "Content-Type": contentType,
       "Content-Length": data.length,
+      "Cache-Control": "public, max-age=300",
     });
 
     res.end(data);

@@ -23,6 +23,7 @@ const { encodeAddress } = require(
 );
 const config = require(path.join(__dirname, "../config"));
 const slashDebugPath = path.join(__dirname, "../../logs/slash-debug.log");
+const spaceDebugPath = path.join(__dirname, "../../logs/space-undock-debug.log");
 
 function appendSlashDebug(entry) {
   try {
@@ -34,6 +35,19 @@ function appendSlashDebug(entry) {
     );
   } catch (error) {
     log.warn(`[PacketDispatcher] Failed to write slash debug log: ${error.message}`);
+  }
+}
+
+function appendSpaceDebug(entry) {
+  try {
+    fs.mkdirSync(path.dirname(spaceDebugPath), { recursive: true });
+    fs.appendFileSync(
+      spaceDebugPath,
+      `[${new Date().toISOString()}] ${entry}\n`,
+      "utf8",
+    );
+  } catch (error) {
+    log.warn(`[PacketDispatcher] Failed to write space debug log: ${error.message}`);
   }
 }
 
@@ -145,6 +159,29 @@ class PacketDispatcher {
     log.debug(
       `[CallReq] ${serviceName || "?"}::${call.method}() callID=${callID}`,
     );
+    const lookedUpService =
+      this.serviceManager && serviceName
+        ? this.serviceManager.lookup(serviceName)
+        : null;
+    const resolvedServiceName = lookedUpService ? lookedUpService.name : serviceName;
+    const lowerResolvedServiceName = String(
+      resolvedServiceName || serviceName || "",
+    ).toLowerCase();
+    const lowerMethodName = String(call.method || "").toLowerCase();
+    const traceSpaceCall =
+      call.method === "Undock" ||
+      resolvedServiceName === "beyonce" ||
+      (resolvedServiceName === "ship" && call.method === "MachoBindObject") ||
+      lowerMethodName.includes("homestation") ||
+      lowerMethodName.includes("home_station") ||
+      lowerResolvedServiceName.includes("home_station") ||
+      lowerResolvedServiceName.includes("homestation") ||
+      lowerResolvedServiceName.includes("homestation");
+    if (traceSpaceCall) {
+      appendSpaceDebug(
+        `CallReq service=${resolvedServiceName || serviceName || "?"} rawService=${serviceName || "?"} method=${call.method} callID=${callID} currentBound=${session && session.currentBoundObjectID ? session.currentBoundObjectID : "null"} args=${JSON.stringify(summarizeValue(call.args))} kwargs=${JSON.stringify(summarizeValue(call.kwargs))}`,
+      );
+    }
     if (serviceName === "slash") {
       appendSlashDebug(
         `CallReq method=${call.method} callID=${callID} args=${JSON.stringify(summarizeValue(call.args))} kwargs=${JSON.stringify(summarizeValue(call.kwargs))} raw=${JSON.stringify(summarizeValue(call.raw))}`,
@@ -152,7 +189,7 @@ class PacketDispatcher {
     }
 
     if (this.serviceManager && serviceName) {
-      const service = this.serviceManager.lookup(serviceName);
+      const service = lookedUpService;
       if (service) {
         const previousBoundObjectID = session
           ? session.currentBoundObjectID
@@ -174,6 +211,11 @@ class PacketDispatcher {
           // Scan results for bound object OIDs and register them
           // so future calls to those OIDs route back to this service.
           this._scanAndRegisterOIDs(result, service);
+          if (traceSpaceCall) {
+            appendSpaceDebug(
+              `CallRsp service=${service.name} method=${call.method} callID=${callID} result=${JSON.stringify(summarizeValue(result))}`,
+            );
+          }
 
           // Always send a response, even if result is null/undefined
           this._sendCallResponse(
@@ -181,11 +223,24 @@ class PacketDispatcher {
             result !== undefined ? result : null,
             session,
           );
+          if (typeof service.afterCallResponse === "function") {
+            service.afterCallResponse(call.method, session, {
+              args: call.args,
+              kwargs: call.kwargs,
+              result,
+              packet: pkt,
+            });
+          }
           return true;
         } catch (err) {
           log.err(
             `[CallReq] Error in ${serviceName}::${call.method}: ${err.message}`,
           );
+          if (traceSpaceCall) {
+            appendSpaceDebug(
+              `CallErr service=${service.name} method=${call.method} callID=${callID} error=${err && err.stack ? err.stack : err.message}`,
+            );
+          }
           if (isMachoWrappedException(err)) {
             this._sendErrorResponse(pkt, err.machoErrorResponse, session);
           } else {
