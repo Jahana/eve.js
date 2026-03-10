@@ -21,6 +21,10 @@ const {
   getCharacterSkillPointTotal,
   SKILL_FLAG_ID,
 } = require(path.join(__dirname, "../skills/skillState"));
+const { resolveSessionCharacterId } = require(path.join(
+  __dirname,
+  "../_shared/characterResolver",
+));
 
 const ATTRIBUTE_CHARISMA = 164;
 const ATTRIBUTE_INTELLIGENCE = 165;
@@ -52,7 +56,7 @@ class DogmaService extends BaseService {
   }
 
   _getCharID(session) {
-    return (session && (session.characterID || session.charid || session.userid)) || 140000001;
+    return resolveSessionCharacterId(session);
   }
 
   _getShipID(session) {

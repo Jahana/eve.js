@@ -16,6 +16,10 @@ const {
 const {
   getCharacterSkillPointTotal,
 } = require(path.join(__dirname, "../skills/skillState"));
+const { resolveSessionCharacterId } = require(path.join(
+  __dirname,
+  "../_shared/characterResolver",
+));
 const DBTYPE_I4 = 0x03;
 const DBTYPE_R8 = 0x05;
 const DBTYPE_BOOL = 0x0b;
@@ -38,9 +42,10 @@ class ShipService extends BaseService {
   }
 
   _getShipID(session) {
+    const charID = resolveSessionCharacterId(session);
     const activeShip =
-      session && session.characterID
-        ? getActiveShipRecord(session.characterID)
+      charID > 0
+        ? getActiveShipRecord(charID)
         : null;
     return (
       (activeShip && (activeShip.itemID || activeShip.shipID)) ||
@@ -88,9 +93,7 @@ class ShipService extends BaseService {
     // V23.02 clientDogmaLocation._MakeShipActive unpacks:
     //   instanceCache, instanceFlagQuantityCache, wbData, heatStates
     // Returning the older 3-tuple crashes boarding/activation immediately.
-    const charID =
-      (session && (session.characterID || session.charid || session.userid)) ||
-      140000001;
+    const charID = resolveSessionCharacterId(session);
     const shipID =
       (activeShip && (activeShip.itemID || activeShip.shipID)) ||
       this._getShipID(session);

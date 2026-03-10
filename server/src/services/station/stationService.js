@@ -4,21 +4,23 @@
  * Handles station-related queries from the client.
  * Called after character selection to get info about the station
  * the character is docked in.
- * 
+ *
  * TODO: replace static return data (e.g. GetGuests) with accurate dynamic data.
  */
 
 const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
+const { getStationRecord, buildStationServiceMask } = require(
+  path.join(__dirname, "../_shared/stationStaticData"),
+);
+const { buildKeyVal } = require(
+  path.join(__dirname, "../_shared/serviceHelpers"),
+);
 const {
-  getStationRecord,
-  buildStationServiceMask,
-} = require(path.join(__dirname, "../_shared/stationStaticData"));
-const { buildKeyVal } = require(path.join(
-  __dirname,
-  "../_shared/serviceHelpers",
-));
+  snapshotSessionPresence,
+  listOnlineGuestsInStation,
+} = require(path.join(__dirname, "./stationPresence"));
 
 class StationService extends BaseService {
   constructor(name = "station") {
@@ -27,10 +29,6 @@ class StationService extends BaseService {
 
   // the function below is never called! (not needed)
   Handle_GetStation(args, session) {
-    // log session to see if we can send back the session data instead of static data
-    console.log(`session data from station::GetStation() : ${JSON.stringify(session)}`)
-    console.log(`args data from station::GetStation() : ${JSON.stringify(args)}`)
-
     const stationID = args && args.length > 0 ? args[0] : 60003760;
     const station = getStationRecord(session, stationID);
     log.info(`[StationSvc] GetStation(${stationID})`);
@@ -90,18 +88,28 @@ class StationService extends BaseService {
   // right now we are just retuning one user (the current user)
   Handle_GetGuests(args, session) {
     log.debug("[StationSvc] GetGuests");
-    const charId = session && session.characterID ? session.characterID : 1;
-    const corpId =
-      session && session.corporationID ? session.corporationID : 1000009;
-    const allianceId = session && session.allianceID ? session.allianceID : 0;
-    const warFactionId =
-      session && session.warFactionID ? session.warFactionID : 0;
+    const stationID =
+      (session && (session.stationid || session.stationID || session.locationid)) ||
+      60003760;
+    const onlineChars = listOnlineGuestsInStation(stationID);
+
+    if (onlineChars.length === 0) {
+      const selfPresence = snapshotSessionPresence(session);
+      if (selfPresence) {
+        onlineChars.push([
+          selfPresence.characterID,
+          selfPresence.corporationID,
+          selfPresence.allianceID,
+          selfPresence.warFactionID,
+        ]);
+      }
+    }
 
     // Return a list containing at least the current user's guest tuple
     // The python client expects: for charID, corpID, allianceID, warFactionID in guests:
     return {
       type: "list",
-      items: [[charId, corpId, allianceId, warFactionId]],
+      items: onlineChars
     };
   }
 

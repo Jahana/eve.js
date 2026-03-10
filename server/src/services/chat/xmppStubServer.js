@@ -133,7 +133,7 @@ function getRoomJid(target) {
     return "";
   }
 
-  return normalizeRoomJid(target.split("/")[0]);
+  return target.split("/")[0];
 }
 
 function getRoomNick(target, fallback) {
@@ -177,30 +177,49 @@ function normalizeRoomJid(roomJid, client = null) {
     return buildConferenceRoomJid(fallbackRoomName);
   }
 
-  if (rawRoomJid === "local@conference.localhost") {
+  const bareJid = rawRoomJid.split("/")[0];
+  const roomNamePart = String(bareJid.split("@")[0] || "")
+    .trim()
+    .toLowerCase();
+  if (!roomNamePart) {
     return buildConferenceRoomJid(
       client ? getLocalRoomNameForClient(client) : getLocalRoomNameForSession(null),
     );
   }
 
-  if (rawRoomJid === "corp@conference.localhost") {
+  if (roomNamePart === "local") {
+    return buildConferenceRoomJid(
+      client ? getLocalRoomNameForClient(client) : getLocalRoomNameForSession(null),
+    );
+  }
+
+  if (roomNamePart === "corp") {
     const session = client ? findSessionForClient(client) : null;
     return buildConferenceRoomJid(getCorpRoomNameForSession(session));
   }
 
-  const legacyLocalMatch = /^solarsystemid2?_(\d+)@conference\.localhost$/i.exec(
-    rawRoomJid,
-  );
+  const localRoomMatch = /^local_(\d+)$/i.exec(roomNamePart);
+  if (localRoomMatch) {
+    return buildConferenceRoomJid(`local_${localRoomMatch[1]}`);
+  }
+
+  const corpRoomMatch = /^corp_(\d+)$/i.exec(roomNamePart);
+  if (corpRoomMatch) {
+    return buildConferenceRoomJid(`corp_${corpRoomMatch[1]}`);
+  }
+
+  const legacyLocalMatch = /^solarsystemid2?_(\d+)$/i.exec(roomNamePart);
   if (legacyLocalMatch) {
     return buildConferenceRoomJid(`local_${legacyLocalMatch[1]}`);
   }
 
-  const legacyCorpMatch = /^corpid_(\d+)@conference\.localhost$/i.exec(rawRoomJid);
+  const legacyCorpMatch = /^corpid_(\d+)$/i.exec(roomNamePart);
   if (legacyCorpMatch) {
     return buildConferenceRoomJid(`corp_${legacyCorpMatch[1]}`);
   }
 
-  return rawRoomJid;
+  // Keep room names stable across mixed hostnames/domains.
+  return buildConferenceRoomJid(roomNamePart);
 }
 
 function findSessionForClient(client) {
@@ -243,6 +262,16 @@ function getClientCharacterId(client, session = null) {
   }
 
   return parseCharacterId(client.userName);
+}
+
+function getSessionCharacterId(session) {
+  if (session && session.chatDisabled) {
+    return 0;
+  }
+  const numericCharacterId = Number(session ? session.characterID || 0 : 0);
+  return Number.isInteger(numericCharacterId) && numericCharacterId > 0
+    ? numericCharacterId
+    : 0;
 }
 
 function buildOwnerInfo(charData, charId) {
@@ -319,6 +348,74 @@ function addRoomMember(roomJid, client) {
   client.rooms.add(roomJid);
 }
 
+function getRoomActiveMembers(roomJid) {
+  if (!roomJid || !roomMembers.has(roomJid)) {
+    return [];
+  }
+
+  const members = roomMembers.get(roomJid);
+  const active = [];
+  for (const member of members) {
+    if (member && member.socket && !member.socket.destroyed) {
+      active.push(member);
+      continue;
+    }
+
+    members.delete(member);
+  }
+
+  if (members.size === 0) {
+    roomMembers.delete(roomJid);
+  }
+
+  return active;
+}
+
+function getClientNick(client, fallback = "capsuleer") {
+  const candidate = String(client && client.nick ? client.nick : "").trim();
+  if (candidate) {
+    return candidate;
+  }
+
+  return String(fallback || "capsuleer").trim() || "capsuleer";
+}
+
+function buildRoomPresenceXml(
+  roomJid,
+  sourceClient,
+  recipientClient,
+  options = {},
+) {
+  const nick = getClientNick(
+    sourceClient,
+    sourceClient && (sourceClient.userName || "capsuleer"),
+  );
+  const fromJid = `${roomJid}/${nick}`;
+  const toJid = recipientClient && recipientClient.boundJid
+    ? recipientClient.boundJid
+    : fromJid;
+  const idAttribute = options.id ? ` id='${escapeXml(options.id)}'` : "";
+
+  if (options.unavailable) {
+    return `<presence from='${escapeXml(fromJid)}' to='${escapeXml(toJid)}' type='unavailable'${idAttribute}/>`;
+  }
+
+  const session = findSessionForClient(sourceClient);
+  const charId = getClientCharacterId(sourceClient, session);
+  const userData = getUserDataForCharacterId(charId);
+  const selfStatus = options.selfPresence ? "<status code='110'/>" : "";
+
+  return [
+    `<presence from='${escapeXml(fromJid)}' to='${escapeXml(toJid)}'${idAttribute}>`,
+    buildEveUserDataElement(userData),
+    "<x xmlns='http://jabber.org/protocol/muc#user'>",
+    `<item affiliation='member' role='participant' jid='${escapeXml(sourceClient.boundJid)}'/>`,
+    selfStatus,
+    "</x>",
+    "</presence>",
+  ].join("");
+}
+
 function removeRoomMember(roomJid, client) {
   if (!roomJid || !roomMembers.has(roomJid)) {
     return;
@@ -331,12 +428,88 @@ function removeRoomMember(roomJid, client) {
   }
 }
 
-function removeClientFromRooms(client) {
+function removeClientFromRooms(client, options = {}) {
+  const notifySelf = options.notifySelf !== false;
+
   for (const roomJid of client.rooms) {
+    const remainingMembers = getRoomActiveMembers(roomJid).filter(
+      (member) => member !== client,
+    );
+    for (const member of remainingMembers) {
+      sendXml(
+        member,
+        buildRoomPresenceXml(roomJid, client, member, {
+          unavailable: true,
+        }),
+      );
+    }
+
+    if (notifySelf) {
+      sendXml(
+        client,
+        buildRoomPresenceXml(roomJid, client, client, {
+          unavailable: true,
+        }),
+      );
+    }
+
     removeRoomMember(roomJid, client);
   }
 
   client.rooms.clear();
+}
+
+function removeCharacterFromChatRooms(characterId, options = {}) {
+  const numericCharacterId = Number.parseInt(String(characterId || 0), 10);
+  if (!Number.isInteger(numericCharacterId) || numericCharacterId <= 0) {
+    return 0;
+  }
+  const notifySelf = options.notifySelf !== false;
+  const disconnectClient = Boolean(options.disconnectClient);
+
+  let removedCount = 0;
+  for (const client of connectedClients) {
+    const session = findSessionForClient(client);
+    const sessionCharacterId = getSessionCharacterId(session);
+    const nickCharacterId = parseCharacterId(client.nick);
+    const inferredCharacterId = getClientCharacterId(client, session);
+    const matchesCharacter =
+      sessionCharacterId === numericCharacterId ||
+      nickCharacterId === numericCharacterId ||
+      inferredCharacterId === numericCharacterId;
+
+    if (!matchesCharacter) {
+      continue;
+    }
+
+    removeClientFromRooms(client, { notifySelf });
+    client.lastRoomJid = "";
+    client.localWelcomeSent = false;
+    client.nick = client.userName || "capsuleer";
+
+    if (disconnectClient && client.socket && !client.socket.destroyed) {
+      try {
+        client.socket.end();
+      } catch (error) {
+        // ignore socket close race
+      }
+      try {
+        client.socket.destroy();
+      } catch (error) {
+        // ignore socket destroy race
+      }
+    }
+
+    removedCount += 1;
+  }
+
+  if (removedCount > 0) {
+    log.debug(
+      `[XMPP] Removed character ${numericCharacterId} from ${removedCount} room session(s)`,
+    );
+  }
+
+  return removedCount;
 }
 
 function buildRoomMessageXml(roomJid, sender, message, recipient) {
@@ -351,7 +524,9 @@ function buildRoomMessageXml(roomJid, sender, message, recipient) {
 }
 
 function deliverRoomMessage(roomJid, sender, message, recipients = null) {
-  const members = recipients || roomMembers.get(roomJid);
+  const members =
+    recipients ||
+    getRoomActiveMembers(roomJid);
   if (!members || message === "") {
     return;
   }
@@ -418,7 +593,22 @@ function handleJoinPresence(client, xml) {
   const roomJid = normalizeRoomJid(getRoomJid(to), client);
   const session = findSessionForClient(client);
   const charId = getClientCharacterId(client, session);
-  const userData = getUserDataForCharacterId(charId);
+  if (!getSessionCharacterId(session)) {
+    removeClientFromRooms(client);
+    sendXml(
+      client,
+      buildRoomPresenceXml(roomJid, client, client, {
+        id: requestId,
+        unavailable: true,
+      }),
+    );
+    return;
+  }
+
+  const alreadyJoined = client.rooms.has(roomJid);
+  const existingMembers = getRoomActiveMembers(roomJid).filter(
+    (member) => member !== client,
+  );
 
   client.lastRoomJid = roomJid || client.lastRoomJid || normalizeRoomJid("", client);
   client.nick =
@@ -429,8 +619,21 @@ function handleJoinPresence(client, xml) {
 
   sendXml(
     client,
-    `<presence from='${escapeXml(roomJid)}/${escapeXml(client.nick)}' to='${escapeXml(client.boundJid)}' id='${escapeXml(requestId)}'>${buildEveUserDataElement(userData)}<x xmlns='http://jabber.org/protocol/muc#user'><item affiliation='member' role='participant' jid='${escapeXml(client.boundJid)}'/><status code='110'/></x></presence>`,
+    buildRoomPresenceXml(roomJid, client, client, {
+      id: requestId,
+      selfPresence: true,
+    }),
   );
+
+  if (!alreadyJoined) {
+    for (const member of existingMembers) {
+      sendXml(client, buildRoomPresenceXml(roomJid, member, client));
+    }
+
+    for (const member of existingMembers) {
+      sendXml(member, buildRoomPresenceXml(roomJid, client, member));
+    }
+  }
 
   if (!client.localWelcomeSent && roomJid === normalizeRoomJid("", client)) {
     client.localWelcomeSent = true;
@@ -456,6 +659,10 @@ function handleGroupMessage(client, xml) {
   addRoomMember(roomJid, client);
 
   const session = findSessionForClient(client);
+  if (!getSessionCharacterId(session)) {
+    return;
+  }
+
   if (body.startsWith("/") || body.startsWith(".")) {
     const result = session
       ? executeChatCommand(session, body, null, {
@@ -701,6 +908,7 @@ function startXmppStub() {
 }
 
 module.exports = {
+  removeCharacterFromChatRooms,
   sendSessionSystemMessage,
   startXmppStub,
 };

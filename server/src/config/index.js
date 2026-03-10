@@ -59,6 +59,9 @@ const defaults = {
 
   // chat server (default for clients is 5222)
   chatServerPort: 5222,
+  // optional explicit host/ip announced by XmppChatMgr.
+  // if empty, the server auto-detects from session socket/network interfaces.
+  chatServerHost: "",
 
   // DO NOT CHANGE
   // proxy node ID: evemu uses 0xFFAA

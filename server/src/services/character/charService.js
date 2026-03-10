@@ -10,11 +10,185 @@
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
 const database = require("../../database");
-const { applyCharacterToSession, getCharacterRecord } = require("./characterState");
+const {
+  applyCharacterToSession,
+  getCharacterRecord,
+} = require("./characterState");
 const {
   ensureCharacterSkills,
   getCharacterSkillPointTotal,
 } = require("../skills/skillState");
+const { ensureCharacterInventory } = require("../inventory/itemStore");
+const {
+  snapshotSessionPresence,
+  setCharacterOnlineState,
+  broadcastStationGuestEvent,
+} = require("../station/stationPresence");
+const { removeCharacterFromChatRooms } = require("../chat/xmppStubServer");
+
+const EMPIRE_BY_CORPORATION = Object.freeze({
+  1000044: 500001,
+  1000115: 500002,
+  1000009: 500003,
+  1000006: 500004,
+});
+
+function normalizeRpcText(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return value.toString("utf8");
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "object") {
+    if (
+      value.type === "wstring" ||
+      value.type === "token" ||
+      value.type === "string"
+    ) {
+      return normalizeRpcText(value.value);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(value, "value")) {
+      return normalizeRpcText(value.value);
+    }
+  }
+
+  return String(value);
+}
+
+function normalizeRpcInt(value, fallback = 0) {
+  if (value === undefined || value === null || value === false) {
+    return fallback;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Math.trunc(value) : fallback;
+  }
+
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return normalizeRpcInt(value.toString("utf8"), fallback);
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return fallback;
+    }
+
+    const numeric = Number(trimmed);
+    return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
+  }
+
+  if (typeof value === "object") {
+    if (
+      value.type === "long" ||
+      value.type === "int" ||
+      value.type === "integer"
+    ) {
+      return normalizeRpcInt(value.value, fallback);
+    }
+
+    if (value.type === "wstring" || value.type === "token") {
+      return normalizeRpcInt(value.value, fallback);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(value, "value")) {
+      return normalizeRpcInt(value.value, fallback);
+    }
+  }
+
+  return fallback;
+}
+
+function extractCharacterIdFromKwargs(kwargs) {
+  if (!kwargs || typeof kwargs !== "object") {
+    return 0;
+  }
+
+  const directKeys = ["characterID", "charID", "charid"];
+  for (const key of directKeys) {
+    if (!Object.prototype.hasOwnProperty.call(kwargs, key)) {
+      continue;
+    }
+
+    const numeric = normalizeRpcInt(kwargs[key], 0);
+    if (numeric > 0) {
+      return numeric;
+    }
+  }
+
+  if (!Array.isArray(kwargs.entries)) {
+    return 0;
+  }
+
+  for (const [rawKey, rawValue] of kwargs.entries) {
+    const key = normalizeRpcText(rawKey).trim().toLowerCase();
+    if (key !== "characterid" && key !== "charid") {
+      continue;
+    }
+
+    const numeric = normalizeRpcInt(rawValue, 0);
+    if (numeric > 0) {
+      return numeric;
+    }
+  }
+
+  return 0;
+}
+
+function resolveCharacterIdForSelection(args, kwargs, session) {
+  if (Array.isArray(args)) {
+    for (const candidate of args) {
+      const numeric = normalizeRpcInt(candidate, 0);
+      if (numeric > 0) {
+        return numeric;
+      }
+    }
+  }
+
+  const kwargCharacterId = extractCharacterIdFromKwargs(kwargs);
+  if (kwargCharacterId > 0) {
+    return kwargCharacterId;
+  }
+
+  if (session) {
+    const fromSession = normalizeRpcInt(
+      session.lastCreatedCharacterID || session.characterID || session.charid,
+      0,
+    );
+    if (fromSession > 0) {
+      return fromSession;
+    }
+  }
+
+  const charactersResult = database.read("characters", "/");
+  const characters =
+    charactersResult.success &&
+    charactersResult.data &&
+    typeof charactersResult.data === "object"
+      ? charactersResult.data
+      : {};
+  const accountId = normalizeRpcInt(session && session.userid, 0);
+
+  const fallbackIds = Object.entries(characters)
+    .filter(([, record]) => normalizeRpcInt(record && record.accountId, 0) === accountId)
+    .map(([id]) => normalizeRpcInt(id, 0))
+    .filter((id) => id > 0)
+    .sort((a, b) => b - a);
+
+  return fallbackIds.length > 0 ? fallbackIds[0] : 0;
+}
 
 /**
  * Build a util.KeyVal PyObject — the only working PyObject type in V23.02
@@ -60,7 +234,7 @@ class CharService extends BaseService {
             ["characterID", parseInt(charId, 10)],
             ["characterName", charData.characterName || "Unknown"],
             ["deletePrepareDateTime", null],
-            ["gender", charData.gender || 1],
+            ["gender", charData.gender ?? 1],
             ["typeID", charData.typeID || 1373],
           ]),
         );
@@ -120,13 +294,14 @@ class CharService extends BaseService {
         const character = getCharacterRecord(charId) || rawCharacter;
         const cid = parseInt(charId, 10);
         const allianceID = this._normalizeAllianceId(character.allianceID);
-        const skillPoints = getCharacterSkillPointTotal(cid) || character.skillPoints || 50000;
+        const skillPoints =
+          getCharacterSkillPointTotal(cid) || character.skillPoints || 50000;
         characterDetails.push(
           buildKeyVal([
             ["characterID", cid],
             ["characterName", character.characterName || "Unknown"],
             ["deletePrepareDateTime", null],
-            ["gender", character.gender || 1],
+            ["gender", character.gender ?? 1],
             ["typeID", character.typeID || 1373],
             ["bloodlineID", character.bloodlineID || 1],
             ["corporationID", character.corporationID || 1000009],
@@ -144,15 +319,24 @@ class CharService extends BaseService {
             ["skillPoints", skillPoints],
             ["shipTypeID", character.shipTypeID || 606],
             ["shipName", character.shipName || "Velator"],
-            ["securityRating", character.securityStatus ?? character.securityRating ?? 0.0],
-            ["securityStatus", character.securityStatus ?? character.securityRating ?? 0.0],
+            [
+              "securityRating",
+              character.securityStatus ?? character.securityRating ?? 0.0,
+            ],
+            [
+              "securityStatus",
+              character.securityStatus ?? character.securityRating ?? 0.0,
+            ],
             ["title", character.title || ""],
             ["unreadMailCount", character.unreadMailCount || 0],
             ["paperdollState", character.paperDollState || 0],
             ["lockTypeID", null],
             [
               "logoffDate",
-              { type: "long", value: character.logoffDate || 132000000000000000 },
+              {
+                type: "long",
+                value: character.logoffDate || 132000000000000000,
+              },
             ],
             ["skillTypeID", null],
             ["toLevel", null],
@@ -187,7 +371,9 @@ class CharService extends BaseService {
   Handle_GetCharacterToSelect(args, session, kwargs) {
     let charId = args && args.length > 0 ? args[0] : 0;
     if (charId === 0 && kwargs && kwargs.entries) {
-      const entry = kwargs.entries.find((candidate) => candidate[0] === "characterID");
+      const entry = kwargs.entries.find(
+        (candidate) => candidate[0] === "characterID",
+      );
       if (entry) {
         charId = entry[1];
       }
@@ -197,7 +383,9 @@ class CharService extends BaseService {
     const characterResult = database.read("characters", "/");
     const characters = characterResult.success ? characterResult.data : {};
     const character = getCharacterRecord(charId) || characters[String(charId)];
-    const allianceID = this._normalizeAllianceId(character && character.allianceID);
+    const allianceID = this._normalizeAllianceId(
+      character && character.allianceID,
+    );
     const skillPoints =
       getCharacterSkillPointTotal(charId) ||
       (character && character.skillPoints) ||
@@ -214,7 +402,7 @@ class CharService extends BaseService {
       ["unprocessedNotifications", character.unprocessedNotifications || 0],
       ["characterID", parseInt(charId, 10)],
       ["petitionMessage", character.petitionMessage || ""],
-      ["gender", character.gender || 1],
+      ["gender", character.gender ?? 1],
       ["bloodlineID", character.bloodlineID || 1],
       [
         "createDateTime",
@@ -231,15 +419,27 @@ class CharService extends BaseService {
       ["constellationID", character.constellationID || 20000020],
       ["regionID", character.regionID || 10000002],
       ["allianceID", allianceID],
-      ["allianceMemberStartDate", allianceID ? character.allianceMemberStartDate || 0 : null],
+      [
+        "allianceMemberStartDate",
+        allianceID ? character.allianceMemberStartDate || 0 : null,
+      ],
       ["shortName", character.shortName || "none"],
       ["bounty", character.bounty || 0.0],
-      ["skillQueueEndTime", { type: "long", value: character.skillQueueEndTime || 0 }],
+      [
+        "skillQueueEndTime",
+        { type: "long", value: character.skillQueueEndTime || 0 },
+      ],
       ["skillPoints", skillPoints],
       ["shipTypeID", character.shipTypeID || 606],
       ["shipName", character.shipName || "Ship"],
-      ["securityRating", character.securityStatus ?? character.securityRating ?? 0.0],
-      ["securityStatus", character.securityStatus ?? character.securityRating ?? 0.0],
+      [
+        "securityRating",
+        character.securityStatus ?? character.securityRating ?? 0.0,
+      ],
+      [
+        "securityStatus",
+        character.securityStatus ?? character.securityRating ?? 0.0,
+      ],
       ["title", character.title || ""],
       ["balance", character.balance ?? 100000.0],
       ["aurBalance", character.aurBalance ?? 0.0],
@@ -304,6 +504,7 @@ class CharService extends BaseService {
     const now = BigInt(Date.now()) * 10000n + 116444736000000000n;
 
     characters[String(newCharId)] = {
+      online: false,
       accountId: session ? session.userid : 1,
       characterName:
         typeof characterName === "string" ? characterName : "New Character",
@@ -330,6 +531,7 @@ class CharService extends BaseService {
       balance: 100000.0,
       aurBalance: 0.0,
       balanceChange: 0.0,
+      walletJournal: [],
       skillPoints: 50000,
       shipTypeID: 606,
       shipName: "Velator",
@@ -354,14 +556,53 @@ class CharService extends BaseService {
       finishSP: null,
       trainedSP: null,
       finishedSkills: [],
+      empireID: EMPIRE_BY_CORPORATION[info.corpID] || null,
+      schoolID: info.corpID,
+      securityStatus: 0.0,
     };
 
-    database.write(
+    const newCharacterRecord = characters[String(newCharId)];
+    const writeResult = database.write(
       "characters",
       `/${String(newCharId)}`,
-      characters[String(newCharId)],
+      newCharacterRecord,
     );
+
+    if (!writeResult || !writeResult.success) {
+      log.warn(
+        `[CharService] Failed to persist new character ${newCharId}: ${writeResult ? writeResult.errorMsg : "WRITE_ERROR"}`,
+      );
+      return 0;
+    }
+
+    // Immediately re-read so follow-up SelectCharacterID sees the persisted row.
+    const verifyResult = database.read("characters", `/${String(newCharId)}`);
+    if (!verifyResult.success || !verifyResult.data) {
+      log.warn(
+        `[CharService] Newly created character ${newCharId} not visible after write; retrying full-table sync`,
+      );
+      const refreshResult = database.read("characters", "/");
+      const refreshedCharacters =
+        refreshResult.success &&
+        refreshResult.data &&
+        typeof refreshResult.data === "object"
+          ? refreshResult.data
+          : {};
+      refreshedCharacters[String(newCharId)] = newCharacterRecord;
+      database.write("characters", "/", refreshedCharacters);
+    }
+
+    if (session) {
+      session.lastCreatedCharacterID = newCharId;
+    }
+
     ensureCharacterSkills(newCharId);
+    const inventoryEnsureResult = ensureCharacterInventory(newCharId);
+    if (!inventoryEnsureResult.success) {
+      log.warn(
+        `[CharService] Failed to initialize starter inventory for character ${newCharId}: ${inventoryEnsureResult.errorMsg}`,
+      );
+    }
 
     log.success(
       `[CharService] Created character "${characterName}" with ID ${newCharId}`,
@@ -406,28 +647,109 @@ class CharService extends BaseService {
   }
 
   Handle_SelectCharacterID(args, session, kwargs) {
-    let charId = args && args.length > 0 ? args[0] : 0;
-    if (charId === 0 && kwargs && kwargs.entries) {
-      const entry = kwargs.entries.find((candidate) => candidate[0] === "characterID");
-      if (entry) {
-        charId = entry[1];
-      }
-    }
-    log.info(`[CharService] SelectCharacterID(${charId})`);
+    const charId = resolveCharacterIdForSelection(args, kwargs, session);
+    log.info(
+      `[CharService] SelectCharacterID(${charId}) args=${JSON.stringify(args || [])}`,
+    );
 
     if (!session) {
       return null;
     }
 
-    const applyResult = applyCharacterToSession(session, charId, {
+    const numericCharId = normalizeRpcInt(charId, 0);
+    if (numericCharId <= 0) {
+      log.warn("[CharService] SelectCharacterID failed to resolve a valid character ID");
+      return null;
+    }
+    ensureCharacterSkills(numericCharId);
+    const ensuredInventory = ensureCharacterInventory(numericCharId);
+    if (!ensuredInventory.success && ensuredInventory.errorMsg !== "CHARACTER_NOT_FOUND") {
+      log.warn(
+        `[CharService] Failed to ensure inventory for ${numericCharId}: ${ensuredInventory.errorMsg}`,
+      );
+    }
+    const previousPresence = snapshotSessionPresence(session);
+    const previousCharId = previousPresence ? previousPresence.characterID : 0;
+    const isCharacterSwitch =
+      previousCharId > 0 &&
+      numericCharId > 0 &&
+      previousCharId !== numericCharId;
+
+    if (isCharacterSwitch) {
+      const offlineResult = setCharacterOnlineState(previousCharId, false);
+      if (!offlineResult.success) {
+        log.warn(
+          `[CharService] Failed to mark previous character ${previousCharId} offline: ${offlineResult.errorMsg}`,
+        );
+      }
+
+      broadcastStationGuestEvent("OnCharNoLongerInStation", previousPresence, {
+        excludeSession: session,
+      });
+      removeCharacterFromChatRooms(previousCharId, {
+        notifySelf: false,
+        disconnectClient: true,
+      });
+    }
+
+    let applyResult = applyCharacterToSession(session, numericCharId, {
       emitNotifications: true,
       logSelection: true,
     });
+    if (!applyResult.success && applyResult.errorMsg === "CHARACTER_NOT_FOUND") {
+      const verifyResult = database.read("characters", `/${String(numericCharId)}`);
+      if (verifyResult.success && verifyResult.data) {
+        ensureCharacterSkills(numericCharId);
+        ensureCharacterInventory(numericCharId);
+        applyResult = applyCharacterToSession(session, numericCharId, {
+          emitNotifications: true,
+          logSelection: true,
+        });
+      }
+    }
+    if (!applyResult.success && applyResult.errorMsg === "CHARACTER_NOT_FOUND") {
+      const fallbackCharId = resolveCharacterIdForSelection([], null, session);
+      if (fallbackCharId > 0 && fallbackCharId !== numericCharId) {
+        log.warn(
+          `[CharService] Retrying SelectCharacterID with fallback character ${fallbackCharId}`,
+        );
+        ensureCharacterSkills(fallbackCharId);
+        ensureCharacterInventory(fallbackCharId);
+        applyResult = applyCharacterToSession(session, fallbackCharId, {
+          emitNotifications: true,
+          logSelection: true,
+        });
+      }
+    }
 
     if (!applyResult.success) {
       log.warn(
-        `[CharService] Failed to select character ${charId}: ${applyResult.errorMsg}`,
+        `[CharService] Failed to select character ${numericCharId}: ${applyResult.errorMsg}`,
       );
+      return null;
+    }
+    session.selectedCharacterID = session.characterID || numericCharId;
+
+    const selectedCharacterId = normalizeRpcInt(session.characterID || numericCharId, numericCharId);
+    const onlineResult = setCharacterOnlineState(selectedCharacterId, true, {
+      stationID: session.stationid || session.stationID || null,
+    });
+    if (!onlineResult.success) {
+      log.warn(
+        `[CharService] Failed to mark character ${selectedCharacterId} online: ${onlineResult.errorMsg}`,
+      );
+    }
+
+    const currentPresence = snapshotSessionPresence(session);
+    const shouldBroadcastJoin =
+      currentPresence &&
+      (!previousPresence ||
+        currentPresence.characterID !== previousPresence.characterID ||
+        currentPresence.stationID !== previousPresence.stationID);
+    if (shouldBroadcastJoin) {
+      broadcastStationGuestEvent("OnCharNowInStation", currentPresence, {
+        excludeSession: session,
+      });
     }
 
     return null;

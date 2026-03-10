@@ -41,6 +41,22 @@ const CHANNEL_CHAR_HEADERS = [
 ];
 const EXTRA_CHAR_HEADERS = ["ownerID", "ownerName", "typeID"];
 
+function getSessionCharacterId(session) {
+  if (session && session.chatDisabled) {
+    return 0;
+  }
+  const numericCharacterId = Number(
+    session ? session.characterID || session.charid || 0 : 0,
+  );
+  return Number.isInteger(numericCharacterId) && numericCharacterId > 0
+    ? numericCharacterId
+    : 0;
+}
+
+function hasSelectedCharacter(session) {
+  return getSessionCharacterId(session) > 0;
+}
+
 function buildList(items) {
   return { type: "list", items };
 }
@@ -114,7 +130,11 @@ function getChannelMembers(channel) {
   }
 
   return Array.from(members).filter(
-    (session) => session && session.socket && !session.socket.destroyed,
+    (session) =>
+      session &&
+      session.socket &&
+      !session.socket.destroyed &&
+      hasSelectedCharacter(session),
   );
 }
 
@@ -169,25 +189,27 @@ function buildChannelMods() {
 }
 
 function buildCharacterExtra(session) {
+  const characterId = getSessionCharacterId(session);
   return buildRow(EXTRA_CHAR_HEADERS, [
-    session.characterID || session.userid || 0,
+    characterId,
     session.characterName || session.userName || "Unknown",
     session.characterTypeID || 1373,
   ]);
 }
 
 function buildChannelChars(channel) {
-  const lines = getChannelMembers(channel).map((session) =>
-    buildList([
-      session.characterID || session.userid || 0,
+  const lines = getChannelMembers(channel).map((session) => {
+    const characterId = getSessionCharacterId(session);
+    return buildList([
+      characterId,
       session.corporationID || 0,
       CHANNEL_MODE_CONVERSATIONALIST,
       session.allianceID || 0,
       session.warFactionID || 0,
       { type: "long", value: toBigInt(session.role || 0) },
       buildCharacterExtra(session),
-    ]),
-  );
+    ]);
+  });
 
   return buildRowset(CHANNEL_CHAR_HEADERS, lines);
 }
@@ -197,11 +219,12 @@ function buildChannelDescriptor(channel) {
 }
 
 function buildSenderInfo(session) {
+  const characterId = getSessionCharacterId(session);
   return [
     session.allianceID || 0,
     session.corporationID || 0,
     [
-      session.characterID || session.userid || 0,
+      characterId,
       session.characterName || session.userName || "Unknown",
       session.characterTypeID || 1373,
     ],
@@ -237,11 +260,27 @@ function sendOnLsc(session, channel, method, sender, argumentsTuple = []) {
 }
 
 function getChannelsForSession(session) {
+  if (!hasSelectedCharacter(session)) {
+    return buildRowset(CHANNEL_HEADERS, []);
+  }
+
   const channel = getLocalChannelForSession(session);
   return buildRowset(CHANNEL_HEADERS, [buildChannelInfoLine(channel)]);
 }
 
 function joinLocalChannel(session) {
+  if (!hasSelectedCharacter(session)) {
+    const channel = getLocalChannelForSession(session);
+    return {
+      channel,
+      result: [
+        buildChannelDescriptor(channel),
+        0,
+        [buildChannelInfo(channel), buildChannelMods(), buildChannelChars(channel)],
+      ],
+    };
+  }
+
   const channel = getLocalChannelForSession(session);
 
   if (!joinedChannels.has(channel.key)) {
@@ -289,13 +328,14 @@ function leaveLocalChannel(session) {
   return channel;
 }
 
-function unregisterSession(session) {
+function unregisterSession(session, options = {}) {
+  const notifySelf = Boolean(options && options.notifySelf);
+
   for (const [key, members] of joinedChannels.entries()) {
     if (!members.has(session)) {
       continue;
     }
 
-    members.delete(session);
     const [type, rawId] = key.split(":");
     const channel = {
       ...getLocalChannelForSession(session),
@@ -304,6 +344,14 @@ function unregisterSession(session) {
       id: Number(rawId),
     };
     const sender = buildSenderInfo(session);
+
+    // For in-session logoff flows (no TCP disconnect), notify the same client
+    // so chat UI can tear down channel windows on character-selection return.
+    if (notifySelf) {
+      sendOnLsc(session, channel, "LeaveChannel", sender, []);
+    }
+
+    members.delete(session);
     for (const member of getChannelMembers(channel)) {
       sendOnLsc(member, channel, "LeaveChannel", sender, []);
     }
@@ -315,6 +363,10 @@ function unregisterSession(session) {
 }
 
 function broadcastLocalMessage(session, message) {
+  if (!hasSelectedCharacter(session)) {
+    return;
+  }
+
   const channel = getLocalChannelForSession(session);
   const sender = buildSenderInfo(session);
   for (const member of getChannelMembers(channel)) {
@@ -341,4 +393,5 @@ module.exports = {
   sendSystemMessage,
   getLocalChannelForSession,
   getLocalChannelName,
+  hasSelectedCharacter,
 };

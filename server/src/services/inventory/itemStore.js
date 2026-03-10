@@ -195,6 +195,107 @@ function nextItemID(charId, items, characterRecord = null) {
   return maxItemID + 1;
 }
 
+function ensureCharacterShipState(charId, characters, items) {
+  const charKey = String(charId);
+  const rawRecord = characters[charKey];
+  if (!rawRecord || typeof rawRecord !== "object") {
+    return {
+      itemsDirty: false,
+      characterDirty: false,
+    };
+  }
+
+  const stationID = toNumber(rawRecord.stationID, 60003760);
+  const legacyShips = collectLegacyShips(charId, rawRecord);
+  let itemsDirty = false;
+
+  for (const legacyShip of legacyShips) {
+    if (items[String(legacyShip.itemID)]) {
+      continue;
+    }
+
+    const normalizedLegacyShip = normalizeShipItem(legacyShip, {
+      ownerID: charId,
+      locationID: stationID,
+      flagID: ITEM_FLAGS.HANGAR,
+    });
+    if (!normalizedLegacyShip) {
+      continue;
+    }
+
+    items[String(legacyShip.itemID)] = normalizedLegacyShip;
+    itemsDirty = true;
+  }
+
+  let characterShipItems = Object.values(items)
+    .map((entry) => normalizeShipItem(entry))
+    .filter(
+      (entry) =>
+        entry &&
+        entry.ownerID === charId &&
+        entry.categoryID === SHIP_CATEGORY_ID,
+    )
+    .sort((left, right) => left.itemID - right.itemID);
+
+  if (characterShipItems.length === 0) {
+    const starterShip = buildShipItem({
+      itemID: nextItemID(charId, items, rawRecord),
+      typeID: rawRecord.shipTypeID || DEFAULT_SHIP_TYPE_ID,
+      ownerID: charId,
+      locationID: stationID,
+      flagID: ITEM_FLAGS.HANGAR,
+      itemName: rawRecord.shipName || null,
+    });
+    items[String(starterShip.itemID)] = starterShip;
+    itemsDirty = true;
+    characterShipItems = [starterShip];
+  }
+
+  let activeShip =
+    characterShipItems.find(
+      (entry) => entry.itemID === toNumber(rawRecord.shipID, 0),
+    ) || characterShipItems[0];
+  if (
+    activeShip &&
+    (activeShip.singleton !== 1 || activeShip.quantity !== -1 || activeShip.stacksize !== 1)
+  ) {
+    const activeShipKey = String(activeShip.itemID);
+    const assembledShip = {
+      ...activeShip,
+      singleton: 1,
+      quantity: -1,
+      stacksize: 1,
+    };
+    items[activeShipKey] = assembledShip;
+    itemsDirty = true;
+    activeShip = assembledShip;
+  }
+
+  const nextRecord = {
+    ...rawRecord,
+    shipID: activeShip.itemID,
+    shipTypeID: activeShip.typeID,
+    shipName: activeShip.itemName,
+  };
+
+  if (Object.prototype.hasOwnProperty.call(nextRecord, "storedShips")) {
+    delete nextRecord.storedShips;
+  }
+
+  if (JSON.stringify(rawRecord) === JSON.stringify(nextRecord)) {
+    return {
+      itemsDirty,
+      characterDirty: false,
+    };
+  }
+
+  characters[charKey] = nextRecord;
+  return {
+    itemsDirty,
+    characterDirty: true,
+  };
+}
+
 function ensureMigrated() {
   if (migrationComplete) {
     return;
@@ -205,66 +306,11 @@ function ensureMigrated() {
   let itemsDirty = false;
   let charactersDirty = false;
 
-  for (const [charIdKey, rawRecord] of Object.entries(characters)) {
+  for (const [charIdKey] of Object.entries(characters)) {
     const charId = toNumber(charIdKey, 0);
-    const stationID = toNumber(rawRecord.stationID, 60003760);
-    const legacyShips = collectLegacyShips(charId, rawRecord);
-
-    for (const legacyShip of legacyShips) {
-      if (!items[String(legacyShip.itemID)]) {
-        items[String(legacyShip.itemID)] = normalizeShipItem(legacyShip, {
-          ownerID: charId,
-          locationID: stationID,
-          flagID: ITEM_FLAGS.HANGAR,
-        });
-        itemsDirty = true;
-      }
-    }
-
-    let characterShipItems = Object.values(items)
-      .map((entry) => normalizeShipItem(entry))
-      .filter(
-        (entry) =>
-          entry &&
-          entry.ownerID === charId &&
-          entry.categoryID === SHIP_CATEGORY_ID,
-      )
-      .sort((left, right) => left.itemID - right.itemID);
-
-    if (characterShipItems.length === 0) {
-      const starterShip = buildShipItem({
-        itemID: nextItemID(charId, items, rawRecord),
-        typeID: rawRecord.shipTypeID || DEFAULT_SHIP_TYPE_ID,
-        ownerID: charId,
-        locationID: stationID,
-        flagID: ITEM_FLAGS.HANGAR,
-        itemName: rawRecord.shipName || null,
-      });
-      items[String(starterShip.itemID)] = starterShip;
-      itemsDirty = true;
-      characterShipItems = [starterShip];
-    }
-
-    const activeShip =
-      characterShipItems.find(
-        (entry) => entry.itemID === toNumber(rawRecord.shipID, 0),
-      ) || characterShipItems[0];
-
-    const nextRecord = {
-      ...rawRecord,
-      shipID: activeShip.itemID,
-      shipTypeID: activeShip.typeID,
-      shipName: activeShip.itemName,
-    };
-
-    if (Object.prototype.hasOwnProperty.call(nextRecord, "storedShips")) {
-      delete nextRecord.storedShips;
-    }
-
-    if (JSON.stringify(rawRecord) !== JSON.stringify(nextRecord)) {
-      characters[charIdKey] = nextRecord;
-      charactersDirty = true;
-    }
+    const ensured = ensureCharacterShipState(charId, characters, items);
+    itemsDirty = itemsDirty || ensured.itemsDirty;
+    charactersDirty = charactersDirty || ensured.characterDirty;
   }
 
   if (itemsDirty && !writeItems(items)) {
@@ -278,6 +324,49 @@ function ensureMigrated() {
   migrationComplete = true;
 }
 
+function ensureCharacterInventory(charId) {
+  ensureMigrated();
+
+  const numericCharId = toNumber(charId, 0);
+  if (numericCharId <= 0) {
+    return {
+      success: false,
+      errorMsg: "CHARACTER_NOT_FOUND",
+    };
+  }
+
+  const characters = readCharacters();
+  if (!characters[String(numericCharId)]) {
+    return {
+      success: false,
+      errorMsg: "CHARACTER_NOT_FOUND",
+    };
+  }
+
+  const items = readItems();
+  const ensured = ensureCharacterShipState(numericCharId, characters, items);
+
+  if (ensured.itemsDirty && !writeItems(items)) {
+    return {
+      success: false,
+      errorMsg: "WRITE_ERROR",
+    };
+  }
+
+  if (ensured.characterDirty && !writeCharacters(characters)) {
+    return {
+      success: false,
+      errorMsg: "WRITE_ERROR",
+    };
+  }
+
+  return {
+    success: true,
+    changed: ensured.itemsDirty || ensured.characterDirty,
+    data: cloneValue(characters[String(numericCharId)]),
+  };
+}
+
 function getAllItems() {
   ensureMigrated();
   return cloneValue(readItems());
@@ -286,6 +375,7 @@ function getAllItems() {
 function listCharacterShipItems(charId, options = {}) {
   ensureMigrated();
   const numericCharId = toNumber(charId, 0);
+  ensureCharacterInventory(numericCharId);
   const locationID =
     options.locationID === undefined || options.locationID === null
       ? null
@@ -359,6 +449,7 @@ function findCharacterShipByType(charId, typeId, stationId = null) {
 
 function getActiveShipItem(charId) {
   ensureMigrated();
+  ensureCharacterInventory(charId);
   const characters = readCharacters();
   const record = characters[String(charId)];
   if (!record) {
@@ -410,6 +501,7 @@ function syncCharacterActiveShip(charId, shipItem) {
 
 function createShipItemForCharacter(charId, stationId, shipType) {
   ensureMigrated();
+  ensureCharacterInventory(charId);
   const characters = readCharacters();
   const items = readItems();
   const record = characters[String(charId)];
@@ -572,6 +664,7 @@ module.exports = {
   SHIP_CATEGORY_ID,
   CAPSULE_TYPE_ID,
   ensureMigrated,
+  ensureCharacterInventory,
   getAllItems,
   getCharacterShipItems,
   getCharacterHangarShipItems,

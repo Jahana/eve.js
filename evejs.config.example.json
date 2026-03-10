@@ -1,6 +1,7 @@
 {
   "autoLaunch": true,
   "serverPort": 26000,
+  "chatServerHost": "",
   "clientPath": "C:/Users/User/Documents/EVE/_GAME/localhost",
   "devMode": true,
   "logLevel": 2

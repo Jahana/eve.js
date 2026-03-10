@@ -96,6 +96,12 @@ class CrimewatchService extends BaseService {
 
     return [myCombatTimers, myEngagements, flaggedCharacters, safetyLevel];
   }
+
+  Handle_GetMySecurityStatus(args, session, kwargs) {
+    log.debug("[CrimewatchService] GetMySecurityStatus called");
+    // Client expects a numeric security status value.
+    return 0.0;
+  }
 }
 
 module.exports = CrimewatchService;

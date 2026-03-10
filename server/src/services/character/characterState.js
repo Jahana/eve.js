@@ -167,6 +167,18 @@ function normalizeCharacterRecord(charId, record) {
   if (!Object.prototype.hasOwnProperty.call(normalized, "factionID")) {
     normalized.factionID = null;
   }
+  if (!Object.prototype.hasOwnProperty.call(normalized, "online")) {
+    normalized.online = false;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, "walletJournal")) {
+    normalized.walletJournal = [];
+  }
+  if (!Array.isArray(normalized.walletJournal)) {
+    normalized.walletJournal = [];
+  }
+  normalized.balance = Number(normalized.balance ?? 100000.0);
+  normalized.aurBalance = Number(normalized.aurBalance ?? 0.0);
+  normalized.balanceChange = Number(normalized.balanceChange ?? 0.0);
   normalized.factionID = deriveFactionID(normalized);
   normalized.empireID = deriveEmpireID(normalized);
   if (!normalized.schoolID) {
@@ -406,13 +418,15 @@ function applyCharacterToSession(session, charId, options = {}) {
 
   session.characterID = charId;
   session.charid = charId;
+  session.selectedCharacterID = charId;
+  session.chatDisabled = false;
   session.characterName = charData.characterName || "Unknown";
   session.characterTypeID = charData.typeID || 1373;
-  session.genderID = charData.gender || 1;
+  session.genderID = charData.gender ?? 1;
   session.genderid = session.genderID;
-  session.bloodlineID = charData.bloodlineID || 1;
+  session.bloodlineID = charData.bloodlineID ?? 1;
   session.bloodlineid = session.bloodlineID;
-  session.raceID = charData.raceID || 1;
+  session.raceID = charData.raceID ?? 1;
   session.raceid = session.raceID;
   session.schoolID = charData.schoolID || charData.corporationID || null;
   session.schoolid = session.schoolID;

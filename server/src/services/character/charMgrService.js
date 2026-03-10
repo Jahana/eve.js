@@ -56,7 +56,7 @@ class CharMgrService extends BaseService {
       ["factionID", factionID],
       ["empireID", empireID],
       ["schoolID", charData.schoolID ?? charData.corporationID ?? null],
-      ["gender", charData.gender || 1],
+      ["gender", charData.gender ?? 1],
       ["createDateTime", buildFiletimeLong(charData.createDateTime)],
       ["description", charData.description || ""],
       ["securityRating", Number(charData.securityStatus ?? charData.securityRating ?? 0)],
@@ -94,7 +94,7 @@ class CharMgrService extends BaseService {
       ],
       [
         charId,
-        charData.gender || 1,
+        charData.gender ?? 1,
         buildFiletimeLong(charData.createDateTime),
         charData.raceID || 1,
         charData.bloodlineID || 1,

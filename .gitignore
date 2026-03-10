@@ -3,3 +3,5 @@ resources
 ref
 evejs.config.json
 _temp_files_ignore
+out.log
+out-clean.log

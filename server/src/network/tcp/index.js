@@ -16,6 +16,15 @@ const sessionRegistry = require(path.join(
   "../../services/chat/sessionRegistry",
 ));
 const chatHub = require(path.join(__dirname, "../../services/chat/chatHub"));
+const { removeCharacterFromChatRooms } = require(path.join(
+  __dirname,
+  "../../services/chat/xmppStubServer",
+));
+const {
+  snapshotSessionPresence,
+  setCharacterOnlineState,
+  broadcastStationGuestEvent,
+} = require(path.join(__dirname, "../../services/station/stationPresence"));
 const { MACHONETMSG_TYPE } = require(
   path.join(__dirname, "../../common/packetTypes"),
 );
@@ -50,6 +59,7 @@ module.exports = function (serviceManager) {
       const handshake = new EVEHandshake(socket);
       let handshakeComplete = false;
       let clientSession = null;
+      let disconnectHandled = false;
 
       // Start the handshake (sends VersionExchangeServer)
       handshake.start();
@@ -171,21 +181,40 @@ module.exports = function (serviceManager) {
         }
       });
 
-      socket.on("close", () => {
-        if (clientSession) {
-          chatHub.unregisterSession(clientSession);
-          sessionRegistry.unregister(clientSession);
+      const finalizeDisconnect = (reason) => {
+        if (!clientSession || disconnectHandled) {
+          return;
         }
+        disconnectHandled = true;
+
+        const presence = snapshotSessionPresence(clientSession);
+        if (presence) {
+          const offlineResult = setCharacterOnlineState(presence.characterID, false);
+          if (!offlineResult.success) {
+            log.warn(
+              `[TCP] Failed to mark character ${presence.characterID} offline (${reason}): ${offlineResult.errorMsg}`,
+            );
+          }
+
+          removeCharacterFromChatRooms(presence.characterID);
+          broadcastStationGuestEvent("OnCharNoLongerInStation", presence, {
+            excludeSession: clientSession,
+          });
+        }
+
+        chatHub.unregisterSession(clientSession);
+        sessionRegistry.unregister(clientSession);
+      };
+
+      socket.on("close", () => {
+        finalizeDisconnect("close");
         logInfo(
           `connection closed: ${socket.remoteAddress}:${socket.remotePort}`,
         );
       });
 
       socket.on("error", (err) => {
-        if (clientSession) {
-          chatHub.unregisterSession(clientSession);
-          sessionRegistry.unregister(clientSession);
-        }
+        finalizeDisconnect("error");
         log.err(`[TCP] socket error: ${err.message}`);
       });
     })

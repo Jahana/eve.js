@@ -4,5 +4,11 @@
     "id": 1,
     "role": "6935543428298309632",
     "banned": false
+  },
+  "test2": {
+    "passwordhash": "efff73f85b6fae6dde19359b01d16184fd1f9300",
+    "id": 2,
+    "role": "6935543428298309632",
+    "banned": false
   }
 }
