@@ -13,6 +13,7 @@ const {
   adjustCharacterBalance,
 } = require("../account/walletState");
 const { resolveShipByName } = require("./shipTypeRegistry");
+const { teleportSession } = require("../../space/transitions");
 
 const DEFAULT_MOTD_MESSAGE = [
   "Welcome to EvEJS.",
@@ -33,6 +34,7 @@ const AVAILABLE_SLASH_COMMANDS = [
   "session",
   "setisk",
   "ship",
+  "tr",
   "typeinfo",
   "wallet",
   "where",
@@ -53,6 +55,7 @@ const COMMANDS_HELP_TEXT = [
   "/item <itemID>",
   "/typeinfo <ship name>",
   "/session",
+  "/tr <character|me> <locationID>",
   "/announce <message>",
 ].join(" ");
 
@@ -187,6 +190,42 @@ function getSessionSummary(session) {
     `system=${session.solarsystemid2 || session.solarsystemid || 0}`,
     `wallet=${formatIsk(session.balance || 0)}`,
   ].join(" | ");
+}
+
+function resolveTeleportTargetSession(invokingSession, targetText) {
+  const normalizedTarget = normalizeCommandName(targetText);
+  if (!normalizedTarget) {
+    return null;
+  }
+
+  if (
+    normalizedTarget === "me" ||
+    normalizedTarget === "self" ||
+    normalizedTarget === String(invokingSession && invokingSession.characterID)
+  ) {
+    return invokingSession;
+  }
+
+  const numericTarget = Number(normalizedTarget);
+  const activeSessions = sessionRegistry
+    .getSessions()
+    .filter((candidate) => Number(candidate && candidate.characterID) > 0);
+
+  if (Number.isInteger(numericTarget) && numericTarget > 0) {
+    const byId = activeSessions.find(
+      (candidate) => Number(candidate.characterID || candidate.charid || 0) === numericTarget,
+    );
+    if (byId) {
+      return byId;
+    }
+  }
+
+  return (
+    activeSessions.find(
+      (candidate) =>
+        normalizeCommandName(candidate.characterName || candidate.userName) === normalizedTarget,
+    ) || null
+  );
 }
 
 function getHangarSummary(session) {
@@ -487,6 +526,73 @@ function executeChatCommand(session, rawMessage, chatHub, options = {}) {
       session,
       options,
       `Announcement sent: ${argumentText}`,
+    );
+  }
+
+  if (command === "tr") {
+    const parts = argumentText ? argumentText.split(/\s+/).filter(Boolean) : [];
+    if (parts.length === 0) {
+      return handledResult(
+        chatHub,
+        session,
+        options,
+        "Usage: /tr <character|me> <locationID>",
+      );
+    }
+
+    const targetText = parts.length === 1 ? "me" : parts[0];
+    const destinationText = parts.length === 1 ? parts[0] : parts.slice(1).join(" ");
+    const targetSession = resolveTeleportTargetSession(session, targetText);
+
+    if (!targetSession) {
+      return handledResult(
+        chatHub,
+        session,
+        options,
+        `Teleport target not found or not online: ${targetText}.`,
+      );
+    }
+
+    const destinationID = Number(destinationText);
+    if (!Number.isInteger(destinationID) || destinationID <= 0) {
+      return handledResult(
+        chatHub,
+        session,
+        options,
+        "Usage: /tr <character|me> <locationID>",
+      );
+    }
+
+    const result = teleportSession(targetSession, destinationID);
+    if (!result.success) {
+      let message = "Teleport failed.";
+      if (result.errorMsg === "CHARACTER_NOT_SELECTED") {
+        message = "Teleport failed: no active character selected.";
+      } else if (result.errorMsg === "SHIP_NOT_FOUND") {
+        message = "Teleport failed: active ship not found.";
+      } else if (result.errorMsg === "DESTINATION_NOT_FOUND") {
+        message = `Teleport destination not found: ${destinationID}.`;
+      }
+
+      return handledResult(chatHub, session, options, message);
+    }
+
+    const destinationLabel =
+      (result.data && result.data.summary) || `location ${destinationID}`;
+    if (chatHub && targetSession !== session) {
+      chatHub.sendSystemMessage(
+        targetSession,
+        `You were teleported to ${destinationLabel}.`,
+      );
+    }
+
+    return handledResult(
+      chatHub,
+      session,
+      options,
+      targetSession === session
+        ? `Teleported to ${destinationLabel}.`
+        : `Teleported ${targetSession.characterName || targetSession.characterID} to ${destinationLabel}.`,
     );
   }
 

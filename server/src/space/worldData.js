@@ -19,6 +19,7 @@ function buildMaps() {
   const stationsById = new Map();
   const stationsBySystem = new Map();
   const celestialsBySystem = new Map();
+  const celestialsById = new Map();
   const stargatesById = new Map();
   const stargatesBySystem = new Map();
   const movementByTypeId = new Map();
@@ -36,6 +37,7 @@ function buildMaps() {
   }
 
   for (const celestial of celestials) {
+    celestialsById.set(celestial.itemID, celestial);
     if (!celestialsBySystem.has(celestial.solarSystemID)) {
       celestialsBySystem.set(celestial.solarSystemID, []);
     }
@@ -73,6 +75,7 @@ function buildMaps() {
     solarSystemsById,
     stationsById,
     stationsBySystem,
+    celestialsById,
     celestialsBySystem,
     stargatesById,
     stargatesBySystem,
@@ -111,6 +114,10 @@ function getCelestialsForSystem(solarSystemID) {
   ];
 }
 
+function getCelestialByID(celestialID) {
+  return ensureLoaded().celestialsById.get(Number(celestialID)) || null;
+}
+
 function getStargatesForSystem(solarSystemID) {
   return [
     ...(ensureLoaded().stargatesBySystem.get(Number(solarSystemID)) || []),
@@ -139,6 +146,7 @@ module.exports = {
   getSolarSystemByID,
   getStationByID,
   getStationsForSystem,
+  getCelestialByID,
   getCelestialsForSystem,
   getStargatesForSystem,
   getStaticSceneForSystem,

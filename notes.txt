@@ -59,3 +59,12 @@ keeper::GetCurrentDungeonForCharacter()
 insurgencySolarsystem::GetLocalCampaignClientSnapshot()
 bountyProxy::GetBountiesAndKillRights()
 scanMgr::SignalTrackerRegister()
+essMgr::GetDataForClientSolarSystem()
+
+when merging:
+  what i changed:
+    - chatCommands.js
+    - transitions.js
+    - worldData.js
+    - chatHub.js
+    - packetDispatcher.js

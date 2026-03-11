@@ -229,12 +229,12 @@ function createLocalSecureResponder(httpsPort, app) {
   });
 
   secureServer.on("tlsClientError", (err) => {
-    console.error(
-      "[LOCAL HTTPS TLS ERROR]",
-      err.message,
-      "code=",
-      err.code || "n/a",
-    );
+    // console.error(
+    //   "[LOCAL HTTPS TLS ERROR]",
+    //   err.message,
+    //   "code=",
+    //   err.code || "n/a",
+    // );
   });
 
   secureServer.on("error", (err) => {

@@ -42,8 +42,8 @@
     "itemID": 140000104,
     "typeID": 24692,
     "ownerID": 140000003,
-    "locationID": 30000142,
-    "flagID": 0,
+    "locationID": 60003463,
+    "flagID": 4,
     "quantity": -1,
     "stacksize": 1,
     "singleton": 1,
@@ -51,41 +51,7 @@
     "categoryID": 6,
     "customInfo": "",
     "itemName": "Abaddon",
-    "spaceState": {
-      "systemID": 30000142,
-      "position": {
-        "x": -251919144.75898477,
-        "y": -44008338.03591462,
-        "z": -450587575.7507233
-      },
-      "velocity": {
-        "x": -10.594592012821973,
-        "y": -5.492538410190003,
-        "z": 85.582666818891
-      },
-      "direction": {
-        "x": -0.12260743217437921,
-        "y": -0.06356318674447661,
-        "z": 0.9904176588018269
-      },
-      "targetPoint": {
-        "x": -1226074573662901,
-        "y": -635631911453085.6,
-        "z": 9904176137430404
-      },
-      "speedFraction": 1,
-      "mode": "GOTO",
-      "targetEntityID": null,
-      "followRange": 0,
-      "orbitDistance": 0,
-      "orbitNormal": {
-        "x": -0.9999015170792751,
-        "y": 0,
-        "z": -0.014034106404192913
-      },
-      "orbitSign": 1,
-      "warpState": null
-    },
+    "spaceState": null,
     "conditionState": {
       "damage": 0,
       "charge": 1,
@@ -101,7 +67,7 @@
     "itemID": 140000105,
     "typeID": 606,
     "ownerID": 140000004,
-    "locationID": 60003760,
+    "locationID": 60003463,
     "flagID": 4,
     "quantity": -1,
     "stacksize": 1,
@@ -138,9 +104,9 @@
     "spaceState": {
       "systemID": 30000142,
       "position": {
-        "x": -107303393185.26912,
-        "y": -18744949691.370937,
-        "z": 436489045853.1843
+        "x": -107303385872.77383,
+        "y": -18744955820.35313,
+        "z": 436489047359.08325
       },
       "velocity": {
         "x": 0,
@@ -153,9 +119,9 @@
         "z": 0.15589922266760514
       },
       "targetPoint": {
-        "x": -107303394154.61826,
-        "y": -18744948878.909298,
-        "z": 436489045653.56165
+        "x": -107303362560,
+        "y": -18744975360,
+        "z": 436489052160
       },
       "speedFraction": 0,
       "mode": "STOP",
@@ -306,8 +272,8 @@
     "itemID": 140000121,
     "typeID": 11567,
     "ownerID": 140000001,
-    "locationID": 30000142,
-    "flagID": 0,
+    "locationID": 60003760,
+    "flagID": 4,
     "quantity": -1,
     "stacksize": 1,
     "singleton": 1,
@@ -315,41 +281,7 @@
     "categoryID": 6,
     "customInfo": "",
     "itemName": "Avatar",
-    "spaceState": {
-      "systemID": 30000142,
-      "position": {
-        "x": -107303367614.20282,
-        "y": -18744968684.6064,
-        "z": 436489112457.57874
-      },
-      "velocity": {
-        "x": -3.051854980366992,
-        "y": -5.651583313039667,
-        "z": 57.87221437498579
-      },
-      "direction": {
-        "x": -0.052412561694353425,
-        "y": -0.09706029970986678,
-        "z": 0.9938974904872567
-      },
-      "targetPoint": {
-        "x": -524232920310745.8,
-        "y": -970621742066606.8,
-        "z": 9939411393977390
-      },
-      "speedFraction": 1,
-      "mode": "GOTO",
-      "targetEntityID": null,
-      "followRange": 0,
-      "orbitDistance": 0,
-      "orbitNormal": {
-        "x": -0.9999015170792751,
-        "y": 0,
-        "z": -0.014034106404192913
-      },
-      "orbitSign": 1,
-      "warpState": null
-    },
+    "spaceState": null,
     "conditionState": {
       "damage": 0,
       "charge": 1,

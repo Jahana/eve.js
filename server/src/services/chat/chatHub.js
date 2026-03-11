@@ -104,7 +104,7 @@ function getLocalChannelForSession(session) {
     ownerID: 1,
     displayName: "Local",
     motd:
-      "<br>eve.js Local Chat<br>Commands: /help, /wallet, /where, /who, /ship <name>",
+      "<br>eve.js Local Chat<br>Commands: /help, /wallet, /where, /who, /ship <name>, /tr <character|me> <locationID>",
     comparisonKey: channelName,
     memberless: false,
     password: null,

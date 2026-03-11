@@ -1809,6 +1809,19 @@ class SolarSystemScene {
     }
   }
 
+  removeBallFromSession(session, entityID) {
+    if (!session || !isReadyForDestiny(session) || !entityID) {
+      return false;
+    }
+
+    const update = {
+      stamp: getNextStamp(),
+      payload: destiny.buildRemoveBallsPayload([entityID]),
+    };
+    this.sendDestinyUpdates(session, [update]);
+    return true;
+  }
+
   broadcastMovementUpdates(updates, excludedSession = null) {
     if (updates.length === 0) {
       return;
@@ -2592,6 +2605,11 @@ class SpaceRuntime {
 
   getStationUndockSpawnState(station) {
     return getStationUndockSpawnState(station);
+  }
+
+  removeBallFromSession(session, entityID) {
+    const scene = this.getSceneForSession(session);
+    return scene ? scene.removeBallFromSession(session, entityID) : false;
   }
 
   canDockAtStation(session, stationID, maxDistance = DEFAULT_STATION_DOCKING_RADIUS) {

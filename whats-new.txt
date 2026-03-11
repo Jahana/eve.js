@@ -1,2 +1,3 @@
-fixed up some stuff with new characters (far to go until complete)
-added "whats-broken.txt" for user reference
+/tr works! (right click > GM controls > TR me here) for stations and celestial objects.
+added a script to run client by itself, without having to start server.
+updated instructions for certificate installation
