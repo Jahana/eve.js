@@ -1,0 +1,3 @@
+"right click > align to" does not work, ship continues in the same path it was going before.
+skills showing under different categories do no appear for newly created characters
+after Log Off, some panels may still appear (chat, overview, etc)

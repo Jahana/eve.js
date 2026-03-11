@@ -55,5 +55,7 @@ implement services:
 shipCosmeticsMgr::GetEnabledCosmetics()
 chatAuthenticationService::GetAuthenticationToken()
 skillMgr::PurchaseSkills()
-
-fix safe logoff
+keeper::GetCurrentDungeonForCharacter()
+insurgencySolarsystem::GetLocalCampaignClientSnapshot()
+bountyProxy::GetBountiesAndKillRights()
+scanMgr::SignalTrackerRegister()

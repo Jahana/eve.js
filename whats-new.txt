@@ -1,3 +1,2 @@
-UNDOCKING!
-warning: you cannot redock if you are in a titan.
-added safe log off skeleton code, need to fix sessionChange on it
+fixed up some stuff with new characters (far to go until complete)
+added "whats-broken.txt" for user reference

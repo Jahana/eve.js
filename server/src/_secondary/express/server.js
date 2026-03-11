@@ -146,9 +146,9 @@ function createLocalSecureResponder(httpsPort, app) {
 
   try {
     const x509 = new crypto.X509Certificate(certPem);
-    log.debug(
-      `[local https cert] subject=${x509.subject} issuer=${x509.issuer} validTo=${x509.validTo}`,
-    );
+    // log.debug(
+    //   `[local https cert] subject=${x509.subject} issuer=${x509.issuer} validTo=${x509.validTo}`,
+    // );
   } catch (err) {
     console.error("[LOCAL HTTPS CERT PARSE ERROR]", err.message);
   }
@@ -176,11 +176,11 @@ function createLocalSecureResponder(httpsPort, app) {
     const authority = headers[":authority"] || headers.host || "";
     const contentType = String(headers["content-type"] || "");
 
-    console.log("---- LOCAL HTTP2 STREAM ----");
-    console.log("METHOD:", method);
-    console.log("PATH:", routePath);
-    console.log("AUTHORITY:", authority);
-    console.log("CONTENT-TYPE:", contentType || "<none>");
+    // console.log("---- LOCAL HTTP2 STREAM ----");
+    // console.log("METHOD:", method);
+    // console.log("PATH:", routePath);
+    // console.log("AUTHORITY:", authority);
+    // console.log("CONTENT-TYPE:", contentType || "<none>");
 
     let bodyLength = 0;
     stream.on("data", (chunk) => {
@@ -188,7 +188,7 @@ function createLocalSecureResponder(httpsPort, app) {
     });
 
     stream.on("end", () => {
-      console.log("BODY BYTES:", bodyLength);
+      // console.log("BODY BYTES:", bodyLength);
     });
 
     stream.on("error", (err) => {
@@ -215,9 +215,9 @@ function createLocalSecureResponder(httpsPort, app) {
   });
 
   secureServer.on("request", (req, res) => {
-    console.log("---- LOCAL HTTPS HTTP1 REQUEST ----");
-    console.log("METHOD:", req.method);
-    console.log("PATH:", req.url);
+    // console.log("---- LOCAL HTTPS HTTP1 REQUEST ----");
+    // console.log("METHOD:", req.method);
+    // console.log("PATH:", req.url);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
@@ -241,9 +241,7 @@ function createLocalSecureResponder(httpsPort, app) {
     console.error("[LOCAL HTTPS SERVER ERROR]", err.message);
   });
 
-  secureServer.listen(httpsPort, "127.0.0.1", () => {
-    log.debug(`local https responder listening on 127.0.0.1:${httpsPort}`);
-  });
+  secureServer.listen(httpsPort, "127.0.0.1");
 }
 
 function wireTunnel(clientSocket, upstreamSocket, head, label) {
@@ -280,15 +278,15 @@ function wireTunnel(clientSocket, upstreamSocket, head, label) {
   });
 
   upstreamSocket.on("close", () => {
-    console.log(
-      `[PROXY TUNNEL CLOSE upstream] ${label} up=${upBytes} down=${downBytes}`,
-    );
+    // console.log(
+    //   `[PROXY TUNNEL CLOSE upstream] ${label} up=${upBytes} down=${downBytes}`,
+    // );
   });
 
   clientSocket.on("close", () => {
-    console.log(
-      `[PROXY TUNNEL CLOSE client] ${label} up=${upBytes} down=${downBytes}`,
-    );
+    // console.log(
+    //   `[PROXY TUNNEL CLOSE client] ${label} up=${upBytes} down=${downBytes}`,
+    // );
   });
 
   upstreamSocket.on("error", (err) => {
@@ -324,11 +322,11 @@ function startServer() {
       );
     }
 
-    console.log("---- HTTP REQUEST ----");
-    console.log("URL:", req.url);
-    console.log("METHOD:", req.method);
-    console.log("HEADERS:", req.headers);
-    console.log("----------------------");
+    // console.log("---- HTTP REQUEST ----");
+    // console.log("URL:", req.url);
+    // console.log("METHOD:", req.method);
+    // console.log("HEADERS:", req.headers);
+    // console.log("----------------------");
     next();
   });
 
@@ -366,9 +364,9 @@ function startServer() {
     const connectHost = interceptLocal ? "127.0.0.1" : host;
     const connectPort = interceptLocal ? httpsPort : port;
 
-    console.log(
-      `[HTTPS CONNECT] ${targetRaw} -> ${interceptLocal ? "LOCAL" : "REMOTE"} ${connectHost}:${connectPort}`,
-    );
+    // console.log(
+    //   `[HTTPS CONNECT] ${targetRaw} -> ${interceptLocal ? "LOCAL" : "REMOTE"} ${connectHost}:${connectPort}`,
+    // );
 
     const upstreamSocket = net.connect(connectPort, connectHost, () => {
       clientSocket.write(

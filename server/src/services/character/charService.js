@@ -597,7 +597,14 @@ class CharService extends BaseService {
     if (session) {
       session.lastCreatedCharacterID = newCharId;
     }
-    
+
+    const inventoryResult = ensureCharacterInventory(newCharId);
+    if (!inventoryResult || !inventoryResult.success) {
+      log.warn(
+        `[CharService] Failed to provision inventory for new character ${newCharId}: ${inventoryResult ? inventoryResult.errorMsg : "INVENTORY_ERROR"}`,
+      );
+    }
+
     ensureCharacterSkills(newCharId);
 
     log.success(
@@ -643,21 +650,21 @@ class CharService extends BaseService {
   }
 
   Handle_SelectCharacterID(args, session, kwargs) {
-    let charId = args && args.length > 0 ? args[0] : 0;
-    if (charId === 0 && kwargs && kwargs.entries) {
-      const entry = kwargs.entries.find(
-        (candidate) => candidate[0] === "characterID",
-      );
-      if (entry) {
-        charId = entry[1];
-      }
-    }
+    const charId = resolveCharacterIdForSelection(args, kwargs, session);
     log.info(`[CharService] SelectCharacterID(${charId})`);
 
     if (!session) {
       return null;
     }
 
+    const inventoryResult = ensureCharacterInventory(charId);
+    if (!inventoryResult || !inventoryResult.success) {
+      log.warn(
+        `[CharService] Failed to ensure inventory for character ${charId}: ${inventoryResult ? inventoryResult.errorMsg : "INVENTORY_ERROR"}`,
+      );
+    }
+
+    const previousPresence = snapshotSessionPresence(session);
     const applyResult = applyCharacterToSession(session, charId, {
       emitNotifications: true,
       logSelection: true,
@@ -667,16 +674,17 @@ class CharService extends BaseService {
       log.warn(
         `[CharService] Failed to select character ${charId}: ${applyResult.errorMsg}`,
       );
+      return null;
     } else if (!session.stationid && !session.stationID) {
       restoreSpaceSession(session);
     }
 
-    session.selectedCharacterID = session.characterID || numericCharId;
-
     const selectedCharacterId = normalizeRpcInt(
-      session.characterID || numericCharId,
-      numericCharId,
+      session.characterID || charId,
+      charId,
     );
+    session.selectedCharacterID = selectedCharacterId;
+
     const onlineResult = setCharacterOnlineState(selectedCharacterId, true, {
       stationID: session.stationid || session.stationID || null,
     });

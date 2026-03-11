@@ -660,6 +660,71 @@ function spawnShipInStationHangar(charId, stationId, shipType) {
   };
 }
 
+function ensureCharacterInventory(charId) {
+  ensureMigrated();
+  const numericCharId = toNumber(charId, 0);
+  if (numericCharId <= 0) {
+    return {
+      success: false,
+      errorMsg: "CHARACTER_NOT_FOUND",
+    };
+  }
+
+  const characters = readCharacters();
+  const record = characters[String(numericCharId)];
+  if (!record || typeof record !== "object") {
+    return {
+      success: false,
+      errorMsg: "CHARACTER_NOT_FOUND",
+    };
+  }
+
+  const stationID = toNumber(record.stationID, 60003760);
+  const ownedShips = listCharacterShipItems(numericCharId);
+
+  let activeShip =
+    ownedShips.find((entry) => entry.itemID === toNumber(record.shipID, 0)) ||
+    ownedShips[0] ||
+    null;
+
+  if (!activeShip) {
+    const starterShip = buildShipItem({
+      itemID: nextItemID(numericCharId, readItems(), record),
+      typeID: record.shipTypeID || DEFAULT_SHIP_TYPE_ID,
+      ownerID: numericCharId,
+      locationID: stationID,
+      flagID: ITEM_FLAGS.HANGAR,
+      itemName: record.shipName || null,
+    });
+    const items = readItems();
+    items[String(starterShip.itemID)] = starterShip;
+    if (!writeItems(items)) {
+      return {
+        success: false,
+        errorMsg: "WRITE_ERROR",
+      };
+    }
+    activeShip = starterShip;
+  }
+
+  const shipNeedsSync =
+    toNumber(record.shipID, 0) !== activeShip.itemID ||
+    toNumber(record.shipTypeID, 0) !== activeShip.typeID ||
+    String(record.shipName || "") !== String(activeShip.itemName || "");
+
+  if (shipNeedsSync) {
+    const syncResult = syncCharacterActiveShip(numericCharId, activeShip);
+    if (!syncResult.success) {
+      return syncResult;
+    }
+  }
+
+  return {
+    success: true,
+    data: cloneValue(activeShip),
+  };
+}
+
 function setActiveShipForCharacter(charId, shipId) {
   const shipItem = findCharacterShipItem(charId, shipId);
   if (!shipItem) {
@@ -733,6 +798,7 @@ module.exports = {
   findShipItemById,
   findCharacterShipByType,
   getActiveShipItem,
+  ensureCharacterInventory,
   spawnShipInStationHangar,
   updateShipItem,
   setShipPackagingState,
