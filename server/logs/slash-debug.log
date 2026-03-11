@@ -118,3 +118,13 @@
 [2026-03-11T18:25:49.373Z] SlashCmd user=1 char=140000004 command="/tr me 40009076" args=["<Buffer:/tr me 40009076>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
 [2026-03-11T18:26:05.591Z] CallReq method=SlashCmd callID=174 args=["<Buffer:/tr me 60003463>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 60003463>"],{"type":"dict","entries":[["machoVersion",1]]}]
 [2026-03-11T18:26:05.593Z] SlashCmd user=1 char=140000004 command="/tr me 60003463" args=["<Buffer:/tr me 60003463>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-11T19:16:37.501Z] CallReq method=SlashCmd callID=167 args=["<Buffer:/tr me 140000004>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 140000004>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-11T19:16:37.504Z] SlashCmd user=2 char=140000003 command="/tr me 140000004" args=["<Buffer:/tr me 140000004>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-11T19:16:53.963Z] CallReq method=SlashCmd callID=171 args=["<Buffer:/tr me 40009076>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 40009076>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-11T19:16:53.964Z] SlashCmd user=2 char=140000003 command="/tr me 40009076" args=["<Buffer:/tr me 40009076>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-11T19:17:08.896Z] CallReq method=SlashCmd callID=175 args=["<Buffer:/tr me 140000003>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 140000003>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-11T19:17:08.897Z] SlashCmd user=1 char=140000004 command="/tr me 140000003" args=["<Buffer:/tr me 140000003>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-11T19:18:05.302Z] CallReq method=SlashCmd callID=191 args=["<Buffer:/tr me 60003760>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 60003760>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-11T19:18:05.302Z] SlashCmd user=2 char=140000003 command="/tr me 60003760" args=["<Buffer:/tr me 60003760>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-11T19:18:11.295Z] CallReq method=SlashCmd callID=178 args=["<Buffer:/tr me 60003760>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 60003760>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-11T19:18:11.296Z] SlashCmd user=1 char=140000004 command="/tr me 60003760" args=["<Buffer:/tr me 60003760>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}

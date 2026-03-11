@@ -902,8 +902,17 @@ function teleportSession(session, targetID) {
   const previousPresence = snapshotSessionPresence(session);
   const previousSpaceShipID =
     session && session._space ? Number(session._space.shipID || 0) : 0;
+  const previousSystemID =
+    session && session._space ? Number(session._space.systemID || 0) : 0;
+  const sameSystemSpaceTeleport = Boolean(
+    session &&
+      session._space &&
+      destination.kind === "space" &&
+      destination.system &&
+      Number(destination.system.solarSystemID || 0) === previousSystemID,
+  );
 
-  if (session._space) {
+  if (session._space && !sameSystemSpaceTeleport) {
     if (previousSpaceShipID > 0) {
       spaceRuntime.removeBallFromSession(session, previousSpaceShipID);
     }
@@ -1027,14 +1036,37 @@ function teleportSession(session, targetID) {
     return applyResult;
   }
 
-  spaceRuntime.attachSession(session, moveResult.data, {
-    systemID: destination.system.solarSystemID,
-    beyonceBound: true,
-    pendingUndockMovement: false,
-    broadcast: true,
-    spawnStopped: true,
-  });
-  spaceRuntime.ensureInitialBallpark(session, { force: true });
+  if (sameSystemSpaceTeleport) {
+    const repositionedEntity = spaceRuntime.repositionSession(
+      session,
+      moveResult.data,
+      {
+        position: spawnState.position,
+        direction: spawnState.direction,
+      },
+    );
+
+    if (!repositionedEntity) {
+      spaceRuntime.detachSession(session, { broadcast: true });
+      spaceRuntime.attachSession(session, moveResult.data, {
+        systemID: destination.system.solarSystemID,
+        beyonceBound: true,
+        pendingUndockMovement: false,
+        broadcast: true,
+        spawnStopped: true,
+      });
+      spaceRuntime.ensureInitialBallpark(session, { force: true });
+    }
+  } else {
+    spaceRuntime.attachSession(session, moveResult.data, {
+      systemID: destination.system.solarSystemID,
+      beyonceBound: true,
+      pendingUndockMovement: false,
+      broadcast: true,
+      spawnStopped: true,
+    });
+    spaceRuntime.ensureInitialBallpark(session, { force: true });
+  }
 
   syncOnlinePresenceForTeleport(session, previousPresence);
 

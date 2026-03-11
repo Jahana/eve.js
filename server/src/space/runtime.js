@@ -610,6 +610,18 @@ function buildShipPrimeUpdatesForEntities(entities, stampOverride = null) {
   return updates;
 }
 
+function orderEntitiesWithEgoFirst(entities, egoEntityID) {
+  const ordered = Array.isArray(entities) ? [...entities] : [];
+  const egoIndex = ordered.findIndex(
+    (entity) => Number(entity && entity.itemID) === Number(egoEntityID || 0),
+  );
+  if (egoIndex > 0) {
+    const [egoEntity] = ordered.splice(egoIndex, 1);
+    ordered.unshift(egoEntity);
+  }
+  return ordered;
+}
+
 function buildPositionVelocityCorrectionUpdates(entity, options = {}) {
   const stamp = toInt(options.stamp, getMovementStamp());
   const updates = [];
@@ -1715,8 +1727,14 @@ class SolarSystemScene {
       return false;
     }
 
-    const dynamicEntities = this.getDynamicEntities();
-    const visibleEntities = this.getAllVisibleEntities();
+    const dynamicEntities = orderEntitiesWithEgoFirst(
+      this.getDynamicEntities(),
+      egoEntity.itemID,
+    );
+    const visibleEntities = orderEntitiesWithEgoFirst(
+      this.getAllVisibleEntities(),
+      egoEntity.itemID,
+    );
     // V23.02 expects destiny statestamps on a coarse shared clock, but space
     // bootstrap still needs a strict AddBalls2 -> SetState -> prime/mode order.
     const bootstrapBaseStamp = getCurrentDestinyStamp();
@@ -1763,6 +1781,52 @@ class SolarSystemScene {
 
     session._space.pendingUndockMovement = false;
     return true;
+  }
+
+  repositionSession(session, shipItem, options = {}) {
+    if (!session || !session._space || !shipItem) {
+      return null;
+    }
+
+    const entity = this.getShipEntityForSession(session);
+    if (!entity || Number(entity.itemID) !== Number(shipItem.itemID || 0)) {
+      return null;
+    }
+
+    entity.position = cloneVector(
+      options.position || (shipItem.spaceState && shipItem.spaceState.position),
+      entity.position,
+    );
+    entity.direction = normalizeVector(
+      cloneVector(
+        options.direction || (shipItem.spaceState && shipItem.spaceState.direction),
+        entity.direction,
+      ),
+      entity.direction,
+    );
+    entity.systemID = this.systemID;
+    resetEntityMotion(entity);
+    persistShipEntity(entity);
+
+    if (session._space) {
+      session._space.pendingUndockMovement = false;
+      session._space.initialStateSent = true;
+    }
+
+    const stamp = getMovementStamp();
+    const updates = [
+      {
+        stamp,
+        payload: destiny.buildStopPayload(entity.itemID),
+      },
+      ...buildPositionVelocityCorrectionUpdates(entity, {
+        includePosition: true,
+        stamp,
+      }),
+    ];
+    this.broadcastMovementUpdates(updates);
+
+    return entity;
   }
 
   broadcastAddBalls(entities, excludedSession = null) {
@@ -2553,6 +2617,11 @@ class SpaceRuntime {
   ensureInitialBallpark(session, options = {}) {
     const scene = this.getSceneForSession(session);
     return scene ? scene.ensureInitialBallpark(session, options) : false;
+  }
+
+  repositionSession(session, shipItem, options = {}) {
+    const scene = this.getSceneForSession(session);
+    return scene ? scene.repositionSession(session, shipItem, options) : null;
   }
 
   gotoDirection(session, direction) {

@@ -124,7 +124,7 @@
     "securityStatus": 0,
     "homeStationID": 60003760,
     "cloneStationID": 60003760,
-    "online": true
+    "online": false
   },
   "140000002": {
     "accountId": 1,
@@ -347,7 +347,7 @@
     "corporationID": 1000006,
     "allianceID": 0,
     "factionID": null,
-    "stationID": 60003463,
+    "stationID": 60003760,
     "homeStationID": 60003760,
     "cloneStationID": 60003760,
     "solarSystemID": 30000142,
@@ -373,7 +373,7 @@
     "userType": 30,
     "paperDollState": 0,
     "petitionMessage": "",
-    "worldSpaceID": 60003463,
+    "worldSpaceID": 60003760,
     "unreadMailCount": 0,
     "upcomingEventCount": 0,
     "unprocessedNotifications": 0,
@@ -404,7 +404,7 @@
     "corporationID": 1000006,
     "allianceID": 0,
     "factionID": null,
-    "stationID": 60003463,
+    "stationID": 60003760,
     "homeStationID": 60003760,
     "cloneStationID": 60003760,
     "solarSystemID": 30000142,
@@ -430,7 +430,7 @@
     "userType": 30,
     "paperDollState": 0,
     "petitionMessage": "",
-    "worldSpaceID": 60003463,
+    "worldSpaceID": 60003760,
     "unreadMailCount": 0,
     "upcomingEventCount": 0,
     "unprocessedNotifications": 0,
@@ -448,6 +448,6 @@
     "empireID": 500004,
     "schoolID": 1000006,
     "securityStatus": 0,
-    "online": false
+    "online": true
   }
 }
