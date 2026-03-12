@@ -35,7 +35,18 @@ const defaults = {
   projectVersion: "V23.02@ccp",
 
   // 2: log everything; 1: log errors (default); 0: log nothing;
-  logLevel: 2,
+  logLevel: 1,
+
+  // heavyweight file traces (packet/inventory/space). Keep disabled for
+  // multiplayer performance unless actively debugging.
+  enableSlashDebugTrace: false,
+  enableSpaceUndockDebugTrace: false,
+  enableSessionChangeDebugTrace: false,
+  enableInventoryDebugTrace: false,
+  enableSpaceMovementDebugTrace: false,
+  enableSpaceDestinyDebugTrace: false,
+  enableSpaceWarpDebugTrace: false,
+  enableXmppTranscriptTrace: false,
 
   // #### WARNING #### \\
   // it is recommended not to edit the config values
@@ -60,6 +71,12 @@ const defaults = {
 
   // modern eve_public user-license stubs
   omegaLicenseEnabled: true,
+
+  // in-process hot reload for most service logic without disconnecting clients
+  hotReloadEnabled: true,
+  hotReloadWatch: true,
+  reloadOnFileChange: true,
+  hotReloadDebounceMs: 750,
 
   // proxy node ID: evemu uses 0xFFAA
   proxyNodeId: 0xffaa,
@@ -190,6 +207,14 @@ const envConfig = withDefinedEntries({
   clientPath: process.env.EVEJS_CLIENT_PATH || undefined,
   autoLaunch: parseBoolean(process.env.EVEJS_AUTO_LAUNCH),
   logLevel: parseNumber(process.env.EVEJS_LOG_LEVEL),
+  enableSlashDebugTrace: parseBoolean(process.env.EVEJS_TRACE_SLASH),
+  enableSpaceUndockDebugTrace: parseBoolean(process.env.EVEJS_TRACE_SPACE_UNDOCK),
+  enableSessionChangeDebugTrace: parseBoolean(process.env.EVEJS_TRACE_SESSION_CHANGE),
+  enableInventoryDebugTrace: parseBoolean(process.env.EVEJS_TRACE_INVENTORY),
+  enableSpaceMovementDebugTrace: parseBoolean(process.env.EVEJS_TRACE_SPACE_MOVEMENT),
+  enableSpaceDestinyDebugTrace: parseBoolean(process.env.EVEJS_TRACE_SPACE_DESTINY),
+  enableSpaceWarpDebugTrace: parseBoolean(process.env.EVEJS_TRACE_SPACE_WARP),
+  enableXmppTranscriptTrace: parseBoolean(process.env.EVEJS_TRACE_XMPP),
   serverPort: parseNumber(process.env.EVEJS_SERVER_PORT),
   imageServerUrl: process.env.EVEJS_IMAGE_SERVER_URL || undefined,
   microservicesRedirectUrl:
@@ -200,6 +225,10 @@ const envConfig = withDefinedEntries({
   xmppServerHost: process.env.EVEJS_XMPP_SERVER_HOST || undefined,
   xmppServerPort: parseNumber(process.env.EVEJS_XMPP_SERVER_PORT),
   omegaLicenseEnabled: parseBoolean(process.env.EVEJS_OMEGA_LICENSE),
+  hotReloadEnabled: parseBoolean(process.env.EVEJS_HOT_RELOAD),
+  hotReloadWatch: parseBoolean(process.env.EVEJS_HOT_RELOAD_WATCH),
+  reloadOnFileChange: parseBoolean(process.env.EVEJS_RELOAD_ON_FILE_CHANGE),
+  hotReloadDebounceMs: parseNumber(process.env.EVEJS_HOT_RELOAD_DEBOUNCE_MS),
   proxyNodeId: parseNumber(process.env.EVEJS_PROXY_NODE_ID),
 });
 
@@ -208,6 +237,11 @@ const config = {
   ...fileConfig,
   ...envConfig,
 };
+
+if (config.reloadOnFileChange === undefined || config.reloadOnFileChange === null) {
+  config.reloadOnFileChange = config.hotReloadWatch;
+}
+config.hotReloadWatch = config.reloadOnFileChange !== false;
 
 const legacyChatHost = normalizeHost(fileConfig.chatServerHost || process.env.EVEJS_CHAT_SERVER_HOST);
 const resolvedPublicHost = detectPublicHost(

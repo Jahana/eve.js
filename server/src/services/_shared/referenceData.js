@@ -7,6 +7,7 @@ const TABLE = Object.freeze({
   SHIP_TYPES: "shipTypes",
   SHIP_DOGMA_ATTRIBUTES: "shipDogmaAttributes",
   SKILL_TYPES: "skillTypes",
+  MODULE_TYPES: "moduleTypes",
   SOLAR_SYSTEMS: "solarSystems",
   STATIONS: "stations",
   CELESTIALS: "celestials",
@@ -17,6 +18,7 @@ const TABLE = Object.freeze({
 const ROW_KEY = Object.freeze({
   [TABLE.SHIP_TYPES]: "ships",
   [TABLE.SKILL_TYPES]: "skills",
+  [TABLE.MODULE_TYPES]: "modules",
   [TABLE.SOLAR_SYSTEMS]: "solarSystems",
   [TABLE.STATIONS]: "stations",
   [TABLE.CELESTIALS]: "celestials",
@@ -25,6 +27,12 @@ const ROW_KEY = Object.freeze({
 });
 
 const cache = new Map();
+
+function getTableRevisionSafe(tableName) {
+  return typeof database.getTableRevision === "function"
+    ? database.getTableRevision(tableName)
+    : 0;
+}
 
 function normalizePayload(tableName, payload) {
   if (!payload || typeof payload !== "object") {
@@ -35,8 +43,10 @@ function normalizePayload(tableName, payload) {
 }
 
 function readStaticTable(tableName) {
-  if (cache.has(tableName)) {
-    return cache.get(tableName);
+  const tableRevision = getTableRevisionSafe(tableName);
+  const cachedEntry = cache.get(tableName);
+  if (cachedEntry && cachedEntry.revision === tableRevision) {
+    return cachedEntry.payload;
   }
 
   const result = database.read(tableName, "/");
@@ -45,12 +55,18 @@ function readStaticTable(tableName) {
       `[ReferenceData] Failed to load table ${tableName}: ${result.errorMsg || "READ_ERROR"}`,
     );
     const fallback = {};
-    cache.set(tableName, fallback);
+    cache.set(tableName, {
+      revision: tableRevision,
+      payload: fallback,
+    });
     return fallback;
   }
 
   const payload = normalizePayload(tableName, result.data);
-  cache.set(tableName, payload);
+  cache.set(tableName, {
+    revision: tableRevision,
+    payload,
+  });
   return payload;
 }
 

@@ -1,6 +1,7 @@
 const path = require("path");
 
 const log = require("../../utils/logger");
+const database = require("../../database");
 const {
   TABLE,
   readStaticRows,
@@ -17,6 +18,13 @@ const FALLBACK_SHIPS = [
 ];
 
 let cachedRegistry = null;
+let cachedRegistryRevision = 0;
+
+function getShipTypesRevision() {
+  return typeof database.getTableRevision === "function"
+    ? database.getTableRevision(TABLE.SHIP_TYPES)
+    : 0;
+}
 
 function normalizeShipName(value) {
   return String(value || "")
@@ -99,17 +107,20 @@ function loadDbRegistry() {
 }
 
 function loadRegistry() {
-  if (cachedRegistry) {
+  const currentRevision = getShipTypesRevision();
+  if (cachedRegistry && cachedRegistryRevision === currentRevision) {
     return cachedRegistry;
   }
 
   const dbRegistry = loadDbRegistry();
   if (dbRegistry) {
     cachedRegistry = dbRegistry;
+    cachedRegistryRevision = currentRevision;
     return cachedRegistry;
   }
 
   cachedRegistry = buildFallbackRegistry();
+  cachedRegistryRevision = currentRevision;
   return cachedRegistry;
 }
 

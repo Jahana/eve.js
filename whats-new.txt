@@ -1,5 +1,11 @@
-ship SKINS fully functional!
-easier set up thanks to john, he revised all scripts.
-capacitor, shield, armor, and hull now shows when in space.
-fixed bugs for newly created characters.
-warp kind of works.
+server optimization
+    ^ quicker undocks, TR, fitting
+update server code without client disconnecting!
+    ^ you can also use /reload in-game
+made it so when you leave ship, you end up in a pod. and when you reboard, your pod is basically deleted from the database (to prevent polution)
+small chat delay after running slash commands (to prevent response being sent before slash msg)
+new commands: /load /fit /reload
+    ^ /fit doesnt really work, its just /load
+(50% working) fitting service
+docking now works properly after you automatically aproach station
+    ^ before, if you pressed dock while too far away, it would auto-approach you but not auto dock you.

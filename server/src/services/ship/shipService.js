@@ -13,6 +13,7 @@ const {
   ITEM_FLAGS,
   getShipConditionState,
   setShipPackagingState,
+  listContainerItems,
 } = require(path.join(__dirname, "../inventory/itemStore"));
 const {
   getCharacterSkillPointTotal,
@@ -20,6 +21,13 @@ const {
 const {
   undockSession,
 } = require(path.join(__dirname, "../../space/transitions"));
+const {
+  isModuleOnline,
+} = require(path.join(__dirname, "../dogma/moduleOnlineState"));
+const {
+  getPendingShipDirtTimestamp,
+  setShipDirtTimestamp,
+} = require(path.join(__dirname, "./shipDirtState"));
 const DBTYPE_I4 = 0x03;
 const DBTYPE_R8 = 0x05;
 const DBTYPE_BOOL = 0x0b;
@@ -36,6 +44,13 @@ const INSTANCE_ROW_DESCRIPTOR_COLUMNS = [
   ["shieldCharge", DBTYPE_R8],
   ["incapacitated", DBTYPE_BOOL],
 ];
+const FITTED_SLOT_FLAGS = Object.freeze([
+  11, 12, 13, 14, 15, 16, 17, 18,
+  19, 20, 21, 22, 23, 24, 25, 26,
+  27, 28, 29, 30, 31, 32, 33, 34,
+  92, 93, 94,
+]);
+const TURRET_SLOT_FLAGS = Object.freeze([27, 28, 29, 30, 31, 32, 33, 34]);
 
 function buildCurrentFileTime() {
   return BigInt(Date.now()) * FILETIME_TICKS_PER_MS + FILETIME_EPOCH_OFFSET;
@@ -45,7 +60,6 @@ class ShipService extends BaseService {
   constructor() {
     super("ship");
     this._shipConfiguration = new Map();
-    this._shipDirtTimestamps = new Map();
   }
 
   _getShipID(session) {
@@ -126,28 +140,14 @@ class ShipService extends BaseService {
   }
 
   _getPendingDirtTimestamp(shipID, consume = false) {
-    const numericShipID = this._extractShipId(shipID);
-    if (numericShipID <= 0) {
-      return 0n;
-    }
-
-    const dirtTimestamp = this._shipDirtTimestamps.get(numericShipID) || 0n;
-    if (consume && dirtTimestamp > 0n) {
-      this._shipDirtTimestamps.delete(numericShipID);
-    }
-
-    return dirtTimestamp;
+    return getPendingShipDirtTimestamp(this._extractShipId(shipID), consume);
   }
 
   _setDirtTimestamp(shipID, rawTimestamp = null) {
-    const numericShipID = this._extractShipId(shipID);
-    if (numericShipID <= 0) {
-      return null;
-    }
-
-    const dirtTimestamp = this._normalizeFileTime(rawTimestamp) || buildCurrentFileTime();
-    this._shipDirtTimestamps.set(numericShipID, dirtTimestamp);
-    return dirtTimestamp;
+    return setShipDirtTimestamp(
+      this._extractShipId(shipID),
+      this._normalizeFileTime(rawTimestamp) || buildCurrentFileTime(),
+    );
   }
 
   _buildActivationResponse(activeShip, session) {
@@ -163,36 +163,67 @@ class ShipService extends BaseService {
       this._getShipID(session);
     const skillPoints = getCharacterSkillPointTotal(charID) || 0;
     const shipCondition = getShipConditionState(activeShip);
+    const fittedItems = this._getFittedItemsForShip(session, shipID);
+    const stateEntries = [
+      [
+        shipID,
+        this._buildPackedInstanceRow({
+          itemID: shipID,
+          damage: shipCondition.damage,
+          charge: shipCondition.charge,
+          armorDamage: shipCondition.armorDamage,
+          shieldCharge: shipCondition.shieldCharge,
+          incapacitated: shipCondition.incapacitated,
+        }),
+      ],
+      [
+        charID,
+        this._buildPackedInstanceRow({
+          itemID: charID,
+          online: true,
+          skillPoints,
+        }),
+      ],
+    ];
+
+    for (const fittedItem of fittedItems) {
+      stateEntries.push([
+        fittedItem.itemID,
+        this._buildPackedInstanceRow({
+          itemID: fittedItem.itemID,
+          online: isModuleOnline(fittedItem.itemID, true),
+        }),
+      ]);
+    }
 
     return [
       {
         type: "dict",
-        entries: [
-          [
-            shipID,
-            this._buildPackedInstanceRow({
-              itemID: shipID,
-              damage: shipCondition.damage,
-              charge: shipCondition.charge,
-              armorDamage: shipCondition.armorDamage,
-              shieldCharge: shipCondition.shieldCharge,
-              incapacitated: shipCondition.incapacitated,
-            }),
-          ],
-          [
-            charID,
-            this._buildPackedInstanceRow({
-              itemID: charID,
-              online: true,
-              skillPoints,
-            }),
-          ],
-        ],
+        entries: stateEntries,
       },
-      { type: "dict", entries: [] },
-      { type: "dict", entries: [] },
+      this._buildModuleChargeCache(fittedItems),
+      this._buildWeaponBankCache(fittedItems),
       { type: "dict", entries: [] },
     ];
+  }
+
+  _buildModuleChargeCache(fittedItems = []) {
+    // The HUD asks for charge data for every visible slot. Modules without
+    // ammo still need an explicit empty entry so the client does not fall back
+    // to treating the module type as charge data.
+    return {
+      type: "dict",
+      entries: fittedItems.map((item) => [item.itemID, null]),
+    };
+  }
+
+  _buildWeaponBankCache(fittedItems = []) {
+    return {
+      type: "dict",
+      entries: fittedItems
+        .filter((item) => TURRET_SLOT_FLAGS.includes(Number(item.flagID || 0)))
+        .map((item) => [item.itemID, null]),
+    };
   }
 
   _buildStatusRow({
@@ -281,6 +312,33 @@ class ShipService extends BaseService {
     };
   }
 
+  _getFittedItemsForShip(session, shipID = null, slotFlags = FITTED_SLOT_FLAGS) {
+    const resolvedShipID = this._extractShipId(shipID) || this._getShipID(session);
+    const charID = session && session.characterID ? session.characterID : 0;
+    const seen = new Set();
+    const fittedItems = [];
+
+    for (const slotFlag of slotFlags) {
+      const slotItems = listContainerItems(charID, resolvedShipID, slotFlag);
+      for (const item of slotItems) {
+        if (!item || seen.has(item.itemID)) {
+          continue;
+        }
+
+        seen.add(item.itemID);
+        fittedItems.push(item);
+      }
+    }
+
+    return fittedItems.sort((left, right) => {
+      if ((left.flagID || 0) !== (right.flagID || 0)) {
+        return (left.flagID || 0) - (right.flagID || 0);
+      }
+
+      return (left.itemID || 0) - (right.itemID || 0);
+    });
+  }
+
   _getShipConfiguration(shipID) {
     const numericShipID = this._extractShipId(shipID);
     if (!this._shipConfiguration.has(numericShipID)) {
@@ -355,6 +413,15 @@ class ShipService extends BaseService {
       {
         emitNotifications: true,
         logSelection: true,
+        targetPreviousState: capsuleResult.created
+          ? {
+              locationID: 0,
+              flagID: 0,
+              quantity: 0,
+              singleton: 0,
+              stacksize: 0,
+            }
+          : null,
       },
     );
     if (!activationResult.success) {
@@ -410,12 +477,21 @@ class ShipService extends BaseService {
   Handle_GetFittedItems(args, session, kwargs) {
     const shipID = args && args.length > 0 ? args[0] : null;
     log.debug(`[Ship] GetFittedItems(shipID=${shipID})`);
-    return { type: "dict", entries: [] };
+    const fittedItems = this._getFittedItemsForShip(session, shipID);
+    return {
+      type: "dict",
+      entries: fittedItems.map((item) => [item.itemID, buildInventoryItemRow(item)]),
+    };
   }
 
   Handle_GetModules(args, session, kwargs) {
     log.debug("[Ship] GetModules");
-    return { type: "list", items: [] };
+    const shipID = args && args.length > 0 ? args[0] : null;
+    const fittedItems = this._getFittedItemsForShip(session, shipID);
+    return {
+      type: "list",
+      items: fittedItems.map((item) => item.itemID),
+    };
   }
 
   Handle_ActivateShip(args, session, kwargs) {
@@ -543,7 +619,16 @@ class ShipService extends BaseService {
 
   Handle_GetTurretModules(args, session, kwargs) {
     log.debug("[Ship] GetTurretModules");
-    return { type: "list", items: [] };
+    const shipID = args && args.length > 0 ? args[0] : null;
+    const fittedItems = this._getFittedItemsForShip(
+      session,
+      shipID,
+      TURRET_SLOT_FLAGS,
+    );
+    return {
+      type: "list",
+      items: fittedItems.map((item) => item.itemID),
+    };
   }
 
   Handle_GetShipConfiguration(args, session, kwargs) {
@@ -705,8 +790,11 @@ class ShipService extends BaseService {
   }
 
   callMethod(method, args, session, kwargs) {
+    const handlerName = `Handle_${method}`;
+    const hasExplicitHandler =
+      typeof this[handlerName] === "function" || typeof this[method] === "function";
     const response = super.callMethod(method, args, session, kwargs);
-    if (response !== null) {
+    if (hasExplicitHandler || response !== null) {
       return response;
     }
 

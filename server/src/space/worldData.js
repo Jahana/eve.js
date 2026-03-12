@@ -1,12 +1,34 @@
 const path = require("path");
 
 const log = require(path.join(__dirname, "../utils/logger"));
+const database = require(path.join(__dirname, "../database"));
 const {
   TABLE,
   readStaticRows,
 } = require(path.join(__dirname, "../services/_shared/referenceData"));
 
 let cache = null;
+let cacheSignature = "";
+let lastSignatureCheckAt = 0;
+const WORLD_DATA_SIGNATURE_CHECK_INTERVAL_MS = 1000;
+
+function getTableRevisionSafe(tableName) {
+  return typeof database.getTableRevision === "function"
+    ? database.getTableRevision(tableName)
+    : 0;
+}
+
+function getWorldDataSignature() {
+  return [
+    TABLE.SOLAR_SYSTEMS,
+    TABLE.STATIONS,
+    TABLE.CELESTIALS,
+    TABLE.STARGATES,
+    TABLE.MOVEMENT_ATTRIBUTES,
+  ]
+    .map((tableName) => `${tableName}:${getTableRevisionSafe(tableName)}`)
+    .join("|");
+}
 
 function buildMaps() {
   const solarSystems = readStaticRows(TABLE.SOLAR_SYSTEMS);
@@ -84,11 +106,21 @@ function buildMaps() {
 }
 
 function ensureLoaded() {
-  if (!cache) {
-    cache = buildMaps();
-    log.info(
-      `[SpaceWorld] Loaded ${cache.solarSystems.length} systems, ${cache.stations.length} stations, ${cache.celestials.length} celestials, ${cache.stargates.length} stargates`,
-    );
+  const now = Date.now();
+  const shouldCheckSignature =
+    !cache ||
+    (now - lastSignatureCheckAt) >= WORLD_DATA_SIGNATURE_CHECK_INTERVAL_MS;
+
+  if (shouldCheckSignature) {
+    const nextSignature = getWorldDataSignature();
+    lastSignatureCheckAt = now;
+    if (!cache || cacheSignature !== nextSignature) {
+      cache = buildMaps();
+      cacheSignature = nextSignature;
+      log.info(
+        `[SpaceWorld] Loaded ${cache.solarSystems.length} systems, ${cache.stations.length} stations, ${cache.celestials.length} celestials, ${cache.stargates.length} stargates`,
+      );
+    }
   }
 
   return cache;

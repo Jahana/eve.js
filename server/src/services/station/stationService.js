@@ -31,10 +31,6 @@ class StationService extends BaseService {
 
   // the function below is never called! (not needed)
   Handle_GetStation(args, session) {
-    // log session to see if we can send back the session data instead of static data
-    console.log(`session data from station::GetStation() : ${JSON.stringify(session)}`)
-    console.log(`args data from station::GetStation() : ${JSON.stringify(args)}`)
-
     const stationID = args && args.length > 0 ? args[0] : 60003760;
     const station = getStationRecord(session, stationID);
     log.info(`[StationSvc] GetStation(${stationID})`);

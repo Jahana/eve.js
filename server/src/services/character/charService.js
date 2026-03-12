@@ -10,7 +10,11 @@
 const BaseService = require("../baseService");
 const log = require("../../utils/logger");
 const database = require("../../database");
-const { applyCharacterToSession, getCharacterRecord } = require("./characterState");
+const {
+  applyCharacterToSession,
+  getCharacterRecord,
+  syncActiveShipFittingForSession,
+} = require("./characterState");
 const { restoreSpaceSession } = require("../../space/transitions");
 const {
   resolveSessionCharacterId,
@@ -555,6 +559,49 @@ class CharService extends BaseService {
       );
     } else if (!session.stationid && !session.stationID) {
       restoreSpaceSession(session);
+    }
+
+    if (applyResult.success) {
+      if (Array.isArray(session._postLoginFittingSyncTimers)) {
+        for (const timer of session._postLoginFittingSyncTimers) {
+          clearTimeout(timer);
+        }
+      }
+      session._postLoginFittingSyncTimers = [];
+
+      const scheduleSync = (delayMs) => {
+        const timer = setTimeout(() => {
+          if (
+            !session ||
+            !session.socket ||
+            session.socket.destroyed ||
+            Number(session.characterID || 0) !== Number(charId || 0)
+          ) {
+            return;
+          }
+
+          const fittingSyncResult = syncActiveShipFittingForSession(session, {
+            emitCfgLocation: false,
+            forceRefresh: true,
+          });
+          if (!fittingSyncResult.success) {
+            log.warn(
+              `[CharService] Fitting sync skipped for char=${charId} delay=${delayMs}ms: ${fittingSyncResult.errorMsg}`,
+            );
+          } else {
+            log.info(
+              `[CharService] Fitting sync completed for char=${charId} delay=${delayMs}ms updates=${fittingSyncResult.syncedCount}`,
+            );
+          }
+        }, delayMs);
+        session._postLoginFittingSyncTimers.push(timer);
+      };
+
+      // Login bind order is not deterministic; push fitting refresh over
+      // multiple ticks so invCache/godma reliably consume OnItemChange.
+      scheduleSync(0);
+      scheduleSync(300);
+      scheduleSync(1200);
     }
 
     return null;

@@ -27,6 +27,18 @@ function decodePacket(decoded) {
   let tup = decoded;
   if (tup && typeof tup === "object" && tup.type === "object" && tup.args) {
     tup = tup.args;
+  } else if (
+    tup &&
+    typeof tup === "object" &&
+    (tup.type === "objectex1" || tup.type === "objectex2")
+  ) {
+    const header = Array.isArray(tup.header) ? tup.header : [];
+    const headerTuple = header.find((entry) => Array.isArray(entry) && entry.length >= 6);
+    if (headerTuple) {
+      tup = headerTuple;
+    } else if (Array.isArray(tup.list) && tup.list.length >= 6) {
+      tup = tup.list;
+    }
   }
 
   if (!Array.isArray(tup) || tup.length < 6) {

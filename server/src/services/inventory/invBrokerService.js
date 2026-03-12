@@ -7,6 +7,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const config = require(path.join(__dirname, "../../config"));
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const { resolveShipByTypeID } = require(path.join(
@@ -19,12 +20,28 @@ const {
   getActiveShipRecord,
   shouldFlushDeferredDockedShipSessionChange,
   flushDeferredDockedShipSessionChange,
+  syncInventoryItemForSession,
 } = require(path.join(__dirname, "../character/characterState"));
 const {
   ITEM_FLAGS,
   listContainerItems,
+  findContainerItem,
+  getOccupiedContainerFlags,
+  findItemById,
   findShipItemById,
+  stackAllInventoryItemsInContainer,
+  moveInventoryItem,
 } = require(path.join(__dirname, "./itemStore"));
+const { resolveModuleType } = require(path.join(
+  __dirname,
+  "./moduleTypeRegistry",
+));
+const {
+  setModuleOnline,
+} = require(path.join(__dirname, "../dogma/moduleOnlineState"));
+const {
+  setShipDirtTimestamp,
+} = require(path.join(__dirname, "../ship/shipDirtState"));
 const {
   DEFAULT_STATION,
   getStationRecord,
@@ -45,6 +62,16 @@ const STATION_TYPE_ID = DEFAULT_STATION.stationTypeID;
 const STATION_GROUP_ID = 15;
 const STATION_CATEGORY_ID = 3;
 const STATION_OWNER_ID = DEFAULT_STATION.ownerID;
+const STATION_ITEM_HANGAR_FLAG = 36;
+const FITTING_SLOT_GROUPS = Object.freeze({
+  low: Object.freeze([11, 12, 13, 14, 15, 16, 17, 18]),
+  medium: Object.freeze([19, 20, 21, 22, 23, 24, 25, 26]),
+  high: Object.freeze([27, 28, 29, 30, 31, 32, 33, 34]),
+  rig: Object.freeze([92, 93, 94]),
+});
+const FITTING_SLOT_FLAGS = Object.freeze(
+  Object.values(FITTING_SLOT_GROUPS).flat(),
+);
 const INVENTORY_ROW_HEADER = {
   type: "list",
   items: [
@@ -76,6 +103,10 @@ const INVENTORY_ROW_DESCRIPTOR_COLUMNS = [
 ];
 
 function appendInventoryDebug(entry) {
+  if (!config.enableInventoryDebugTrace) {
+    return;
+  }
+
   try {
     fs.mkdirSync(path.dirname(inventoryDebugPath), { recursive: true });
     fs.appendFileSync(
@@ -169,6 +200,10 @@ class InvBrokerService extends BaseService {
   }
 
   _traceInventory(method, session, payload = {}) {
+    if (!config.enableInventoryDebugTrace) {
+      return;
+    }
+
     const entry = {
       method,
       charId: this._getCharacterId(session),
@@ -270,6 +305,521 @@ class InvBrokerService extends BaseService {
     return [];
   }
 
+  _normalizeItemIdList(value) {
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => this._normalizeInventoryId(entry, NaN))
+        .filter(Number.isFinite);
+    }
+
+    if (value && value.type === "list" && Array.isArray(value.items)) {
+      return value.items
+        .map((entry) => this._normalizeInventoryId(entry, NaN))
+        .filter(Number.isFinite);
+    }
+
+    const singleItemId = this._normalizeInventoryId(value, NaN);
+    return Number.isFinite(singleItemId) ? [singleItemId] : [];
+  }
+
+  _isFittingFlag(flagID) {
+    return FITTING_SLOT_FLAGS.includes(this._normalizeInventoryId(flagID, 0));
+  }
+
+  _findFirstFreeShipFlag(session, shipID, candidateFlags = []) {
+    const charId = this._getCharacterId(session);
+    const normalizedCandidateFlags = candidateFlags
+      .map((entry) => this._normalizeInventoryId(entry, 0))
+      .filter((entry) => entry > 0);
+    if (normalizedCandidateFlags.length === 0) {
+      return 0;
+    }
+
+    const occupiedFlags = getOccupiedContainerFlags(
+      charId,
+      shipID,
+      normalizedCandidateFlags,
+    );
+    for (const candidateFlag of candidateFlags) {
+      const numericFlag = this._normalizeInventoryId(candidateFlag, 0);
+      if (numericFlag > 0 && !occupiedFlags.has(numericFlag)) {
+        return numericFlag;
+      }
+    }
+
+    return 0;
+  }
+
+  _resolveModuleSlotFamily(item) {
+    if (!item || typeof item !== "object") {
+      return null;
+    }
+
+    const moduleType = resolveModuleType(item.typeID, item.itemName);
+    return moduleType && moduleType.slotFamily ? moduleType.slotFamily : null;
+  }
+
+  _resolveDestinationFlagForBoundMove(session, boundContext, item, requestedFlag) {
+    const hasExplicitRequestedFlag =
+      requestedFlag !== undefined && requestedFlag !== null;
+    const normalizedRequestedFlag = hasExplicitRequestedFlag
+      ? this._normalizeInventoryId(requestedFlag, 0)
+      : 0;
+    if (!boundContext) {
+      return 0;
+    }
+
+    if (boundContext.kind !== "shipInventory") {
+      if (normalizedRequestedFlag === STATION_ITEM_HANGAR_FLAG) {
+        return ITEM_FLAGS.HANGAR;
+      }
+
+      return normalizedRequestedFlag || this._normalizeInventoryId(boundContext.flagID, 0);
+    }
+
+    if (!hasExplicitRequestedFlag) {
+      return this._normalizeInventoryId(boundContext.flagID, 0);
+    }
+
+    if (normalizedRequestedFlag > 0 && this._isFittingFlag(normalizedRequestedFlag)) {
+      const boundShipID = this._normalizeInventoryId(boundContext.inventoryID, 0);
+      const itemLocationID = this._normalizeInventoryId(item && item.locationID, 0);
+      const itemFlagID = this._normalizeInventoryId(item && item.flagID, 0);
+      const canSwapWithinShip =
+        boundShipID > 0 &&
+        itemLocationID === boundShipID &&
+        this._isFittingFlag(itemFlagID) &&
+        itemFlagID !== normalizedRequestedFlag;
+
+      // Permit explicit slot targeting for fitted->fitted moves even when the
+      // destination slot is occupied; _applyBoundInventoryMove performs swap.
+      if (canSwapWithinShip) {
+        return normalizedRequestedFlag;
+      }
+
+      return this._findFirstFreeShipFlag(
+        session,
+        boundShipID,
+        [normalizedRequestedFlag],
+      );
+    }
+
+    if (normalizedRequestedFlag > 0) {
+      return normalizedRequestedFlag;
+    }
+
+    const slotFamily = this._resolveModuleSlotFamily(item);
+    if (!slotFamily || !FITTING_SLOT_GROUPS[slotFamily]) {
+      return 0;
+    }
+
+    return this._findFirstFreeShipFlag(
+      session,
+      this._normalizeInventoryId(boundContext.inventoryID, 0),
+      FITTING_SLOT_GROUPS[slotFamily],
+    );
+  }
+
+  _resolveExplicitDestinationLocation(args) {
+    if (!Array.isArray(args) || args.length < 2) {
+      return 0;
+    }
+
+    return this._normalizeInventoryId(args[1], 0);
+  }
+
+  _extractDestinationHintFromArgs(args = []) {
+    const defaultHint = {
+      locationID: this._resolveExplicitDestinationLocation(args),
+      flagID: 0,
+    };
+
+    if (!Array.isArray(args) || args.length < 2) {
+      return defaultHint;
+    }
+
+    const destinationArg = args[1];
+    const fallbackFlagArg = args.length > 2 ? args[2] : null;
+
+    if (Array.isArray(destinationArg)) {
+      return {
+        locationID: this._normalizeInventoryId(destinationArg[0], defaultHint.locationID),
+        flagID: this._normalizeInventoryId(
+          destinationArg.length > 1 ? destinationArg[1] : fallbackFlagArg,
+          0,
+        ),
+      };
+    }
+
+    if (destinationArg && destinationArg.type === "list" && Array.isArray(destinationArg.items)) {
+      return {
+        locationID: this._normalizeInventoryId(destinationArg.items[0], defaultHint.locationID),
+        flagID: this._normalizeInventoryId(
+          destinationArg.items.length > 1 ? destinationArg.items[1] : fallbackFlagArg,
+          0,
+        ),
+      };
+    }
+
+    if (destinationArg && destinationArg.type === "dict" && Array.isArray(destinationArg.entries)) {
+      const entryMap = new Map();
+      for (const [rawKey, value] of destinationArg.entries) {
+        const key = Buffer.isBuffer(rawKey) ? rawKey.toString("utf8") : String(rawKey);
+        entryMap.set(key, value);
+      }
+
+      return {
+        locationID: this._normalizeInventoryId(
+          entryMap.get("locationID") ?? entryMap.get("locationid") ?? defaultHint.locationID,
+          defaultHint.locationID,
+        ),
+        flagID: this._normalizeInventoryId(
+          entryMap.get("flag") ??
+            entryMap.get("flagID") ??
+            entryMap.get("flagid") ??
+            fallbackFlagArg,
+          0,
+        ),
+      };
+    }
+
+    return {
+      locationID: defaultHint.locationID,
+      flagID: this._normalizeInventoryId(fallbackFlagArg, 0),
+    };
+  }
+
+  _getFittedItemsForShip(session, shipID) {
+    const numericShipID = this._normalizeInventoryId(shipID, 0);
+    const charId = this._getCharacterId(session);
+
+    if (numericShipID <= 0) {
+      return [];
+    }
+
+    return listContainerItems(charId, numericShipID, null)
+      .filter((item) => item && this._isFittingFlag(item.flagID))
+      .sort((left, right) => {
+        if ((left.flagID || 0) !== (right.flagID || 0)) {
+          return (left.flagID || 0) - (right.flagID || 0);
+        }
+
+        return (left.itemID || 0) - (right.itemID || 0);
+      });
+  }
+
+  _touchShipDirtForFittingChange(previousItem = null, nextItem = null) {
+    const previousFlagID = this._normalizeInventoryId(
+      previousItem && previousItem.flagID,
+      0,
+    );
+    const previousLocationID = this._normalizeInventoryId(
+      previousItem && previousItem.locationID,
+      0,
+    );
+    const nextFlagID = this._normalizeInventoryId(nextItem && nextItem.flagID, 0);
+    const nextLocationID = this._normalizeInventoryId(
+      nextItem && nextItem.locationID,
+      0,
+    );
+
+    if (this._isFittingFlag(previousFlagID) && previousLocationID > 0) {
+      setShipDirtTimestamp(previousLocationID);
+    }
+
+    if (this._isFittingFlag(nextFlagID) && nextLocationID > 0) {
+      setShipDirtTimestamp(nextLocationID);
+    }
+  }
+
+  _stripFitting(boundContext, session) {
+    if (!boundContext || boundContext.kind !== "shipInventory") {
+      return null;
+    }
+
+    const stationID = this._getStationId(session);
+    if (stationID <= 0) {
+      log.warn("[InvBroker] StripFitting skipped: DOCK_REQUIRED");
+      return null;
+    }
+
+    const shipID = this._normalizeInventoryId(boundContext.inventoryID, 0);
+    if (shipID <= 0) {
+      log.warn("[InvBroker] StripFitting skipped: SHIP_NOT_FOUND");
+      return null;
+    }
+
+    const fittedItems = this._getFittedItemsForShip(session, shipID);
+    this._traceInventory("StripFitting", session, {
+      shipID,
+      count: fittedItems.length,
+      itemIDs: fittedItems.map((item) => item.itemID),
+    });
+    log.debug(
+      `[InvBroker] StripFitting(shipID=${shipID}, count=${fittedItems.length})`,
+    );
+
+    for (const item of fittedItems) {
+      const moveResult = moveInventoryItem(item.itemID, {
+        locationID: stationID,
+        flagID: ITEM_FLAGS.HANGAR,
+        singleton: item.singleton,
+      });
+      if (!moveResult.success) {
+        log.warn(
+          `[InvBroker] StripFitting failed itemID=${item.itemID} shipID=${shipID}: ${moveResult.errorMsg}`,
+        );
+        continue;
+      }
+
+      setModuleOnline(moveResult.data.itemID, false);
+      this._touchShipDirtForFittingChange(
+        moveResult.previousData || null,
+        moveResult.data || null,
+      );
+      syncInventoryItemForSession(
+        session,
+        moveResult.data,
+        moveResult.previousData || {},
+        {
+          emitCfgLocation: true,
+        },
+      );
+    }
+
+    return null;
+  }
+
+  _swapFittedItemsIfNeeded(session, sourceItem, destinationLocationID, destinationFlagID) {
+    if (!sourceItem || !session) {
+      return { success: true };
+    }
+
+    if (!this._isFittingFlag(destinationFlagID)) {
+      return { success: true };
+    }
+
+    const sourceLocationID = this._normalizeInventoryId(sourceItem.locationID, 0);
+    const sourceFlagID = this._normalizeInventoryId(sourceItem.flagID, 0);
+    if (
+      sourceLocationID <= 0 ||
+      sourceLocationID !== this._normalizeInventoryId(destinationLocationID, 0) ||
+      !this._isFittingFlag(sourceFlagID) ||
+      sourceFlagID === destinationFlagID
+    ) {
+      return { success: true };
+    }
+
+    const targetItem = findContainerItem(
+      this._getCharacterId(session),
+      destinationLocationID,
+      destinationFlagID,
+      sourceItem.itemID,
+    );
+    if (!targetItem) {
+      return { success: true };
+    }
+
+    const swapResult = moveInventoryItem(targetItem.itemID, {
+      locationID: destinationLocationID,
+      flagID: sourceFlagID,
+      singleton: 1,
+    });
+    if (!swapResult.success) {
+      return {
+        success: false,
+        errorMsg: swapResult.errorMsg || "SWAP_MOVE_FAILED",
+      };
+    }
+
+    setModuleOnline(
+      swapResult.data.itemID,
+      this._isFittingFlag(swapResult.data.flagID),
+    );
+    this._touchShipDirtForFittingChange(
+      swapResult.previousData || null,
+      swapResult.data || null,
+    );
+    syncInventoryItemForSession(
+      session,
+      swapResult.data,
+      swapResult.previousData || {},
+      {
+        emitCfgLocation: true,
+      },
+    );
+
+    return { success: true };
+  }
+
+  _applyBoundInventoryMove(itemIds, session, kwargs, args = []) {
+    const boundContext = this._getBoundContext(session);
+    if (!boundContext) {
+      return null;
+    }
+
+    const destinationHint = this._extractDestinationHintFromArgs(args);
+    const requestedFlag =
+      this._extractKwarg(kwargs, "flag") ??
+      this._extractKwarg(kwargs, "flagID") ??
+      this._extractKwarg(kwargs, "flagid") ??
+      this._extractKwarg(kwargs, "toFlag") ??
+      this._extractKwarg(kwargs, "destFlag") ??
+      (destinationHint.flagID > 0 ? destinationHint.flagID : null);
+    const explicitDestinationLocationID = destinationHint.locationID;
+    const stationID = this._getStationId(session);
+    const boundInventoryID = this._normalizeInventoryId(
+      boundContext.inventoryID,
+      0,
+    );
+    const normalizedRequestedFlag =
+      requestedFlag === undefined || requestedFlag === null
+        ? 0
+        : this._normalizeInventoryId(requestedFlag, 0);
+    const requestsStationHangar =
+      normalizedRequestedFlag === ITEM_FLAGS.HANGAR ||
+      normalizedRequestedFlag === STATION_ITEM_HANGAR_FLAG;
+    for (const itemID of itemIds) {
+      const item = findItemById(itemID);
+      if (!item) {
+        log.warn(`[InvBroker] Move skipped itemID=${itemID}: ITEM_NOT_FOUND`);
+        continue;
+      }
+
+      const itemLocationID = this._normalizeInventoryId(item.locationID, 0);
+      const itemFlagID = this._normalizeInventoryId(item.flagID, 0);
+      const isShipToStationMove =
+        boundContext.kind === "shipInventory" &&
+        explicitDestinationLocationID === stationID &&
+        itemLocationID === boundInventoryID &&
+        normalizedRequestedFlag <= 0;
+
+      let destinationLocationID = boundInventoryID;
+      let destinationFlagID = isShipToStationMove
+        ? ITEM_FLAGS.HANGAR
+        : this._resolveDestinationFlagForBoundMove(
+            session,
+            boundContext,
+            item,
+            requestedFlag,
+          );
+      if (boundContext.kind === "stationHangar") {
+        destinationLocationID = this._getStationId(session);
+      }
+      if (isShipToStationMove) {
+        destinationLocationID = stationID;
+      }
+      if (
+        explicitDestinationLocationID > 0 &&
+        explicitDestinationLocationID !== destinationLocationID &&
+        requestsStationHangar &&
+        explicitDestinationLocationID === stationID
+      ) {
+        destinationLocationID = stationID;
+        destinationFlagID = ITEM_FLAGS.HANGAR;
+      }
+
+      // Client fitting drags can originate from a station-hangar bound object
+      // while still targeting a ship slot flag. In that case, route the move
+      // into the active ship container instead of leaving the item in station.
+      if (this._isFittingFlag(destinationFlagID)) {
+        const fittingShipID =
+          boundContext.kind === "shipInventory" && boundInventoryID > 0
+            ? boundInventoryID
+            : this._normalizeInventoryId(this._getShipId(session), 0);
+        if (fittingShipID > 0) {
+          destinationLocationID = fittingShipID;
+        }
+      }
+
+      if (boundContext.kind === "shipInventory" && destinationFlagID <= 0) {
+        log.warn(
+          `[InvBroker] Move skipped itemID=${itemID} typeID=${item.typeID}: NO_FITTING_SLOT_RESOLVED`,
+        );
+        continue;
+      }
+
+      if (destinationLocationID <= 0 || destinationFlagID <= 0) {
+        log.warn(
+          `[InvBroker] Move skipped itemID=${itemID}: INVALID_DESTINATION locationID=${destinationLocationID} flagID=${destinationFlagID}`,
+        );
+        continue;
+      }
+
+      const swapResult = this._swapFittedItemsIfNeeded(
+        session,
+        item,
+        destinationLocationID,
+        destinationFlagID,
+      );
+      if (!swapResult.success) {
+        log.warn(
+          `[InvBroker] Move skipped itemID=${itemID}: SLOT_SWAP_FAILED destinationFlag=${destinationFlagID} reason=${swapResult.errorMsg}`,
+        );
+        continue;
+      }
+
+      const moveResult = moveInventoryItem(itemID, {
+        locationID: destinationLocationID,
+        flagID: destinationFlagID,
+        singleton: this._isFittingFlag(destinationFlagID) ? 1 : item.singleton,
+      });
+      if (!moveResult.success) {
+        log.warn(
+          `[InvBroker] Move failed itemID=${itemID} locationID=${destinationLocationID} flagID=${destinationFlagID}: ${moveResult.errorMsg}`,
+        );
+        continue;
+      }
+
+      if (moveResult.split && moveResult.sourceItem) {
+        setModuleOnline(
+          moveResult.data.itemID,
+          this._isFittingFlag(moveResult.data.flagID),
+        );
+        this._touchShipDirtForFittingChange(
+          moveResult.sourcePreviousData || null,
+          moveResult.sourceItem || null,
+        );
+        this._touchShipDirtForFittingChange(
+          moveResult.previousData || null,
+          moveResult.data || null,
+        );
+        syncInventoryItemForSession(
+          session,
+          moveResult.sourceItem,
+          moveResult.sourcePreviousData || {},
+          {
+            emitCfgLocation: true,
+          },
+        );
+        syncInventoryItemForSession(session, moveResult.data, {}, {
+          emitCfgLocation: true,
+        });
+        continue;
+      }
+
+      setModuleOnline(
+        moveResult.data.itemID,
+        this._isFittingFlag(moveResult.data.flagID),
+      );
+      this._touchShipDirtForFittingChange(
+        moveResult.previousData || null,
+        moveResult.data || null,
+      );
+
+      syncInventoryItemForSession(
+        session,
+        moveResult.data,
+        moveResult.previousData || {},
+        {
+          emitCfgLocation: true,
+        },
+      );
+    }
+
+    return null;
+  }
+
   _buildCharacterItemOverrides(session) {
     const charId = this._getCharacterId(session);
     return {
@@ -360,12 +910,13 @@ class InvBrokerService extends BaseService {
     const numericInventoryID = this._normalizeInventoryId(inventoryID);
     const charId = this._getCharacterId(session);
     const stationId = this._getStationId(session);
-    const shipRecord =
+    const storedItem =
       findCharacterShip(charId, numericInventoryID) ||
+      findItemById(numericInventoryID) ||
       findShipItemById(numericInventoryID);
 
-    if (shipRecord) {
-      return this._itemOverridesFromId(session, shipRecord.itemID);
+    if (storedItem) {
+      return this._itemOverridesFromId(session, storedItem.itemID);
     }
 
     if (numericInventoryID === charId) {
@@ -408,12 +959,26 @@ class InvBrokerService extends BaseService {
     }
 
     if (containerID === stationId) {
-      return listContainerItems(
+      const stationItems = listContainerItems(
         charId,
         stationId,
-        numericFlag === null || numericFlag === 0
-          ? ITEM_FLAGS.HANGAR
-          : numericFlag,
+        ITEM_FLAGS.HANGAR,
+      );
+
+      if (numericFlag === STATION_ITEM_HANGAR_FLAG) {
+        return stationItems.filter(
+          (item) => this._normalizeInventoryId(item.categoryID, 0) !== 6,
+        );
+      }
+
+      if (numericFlag === null || numericFlag === 0 || numericFlag === ITEM_FLAGS.HANGAR) {
+        return stationItems.filter(
+          (item) => this._normalizeInventoryId(item.categoryID, 0) === 6,
+        );
+      }
+
+      return stationItems.filter(
+        (item) => this._normalizeInventoryId(item.flagID, 0) === numericFlag,
       );
     }
 
@@ -544,23 +1109,24 @@ class InvBrokerService extends BaseService {
       return this._buildSkillItemOverrides(skillRecord);
     }
 
-    const shipRecord =
+    const storedItem =
       findCharacterShip(charId, id) ||
+      findItemById(id) ||
       findShipItemById(id);
-    if (shipRecord) {
+    if (storedItem) {
       return {
-        itemID: shipRecord.itemID,
-        typeID: shipRecord.typeID,
-        shipName: shipRecord.itemName,
-        ownerID: shipRecord.ownerID,
-        locationID: shipRecord.locationID,
-        flagID: shipRecord.flagID,
-        quantity: shipRecord.quantity,
-        groupID: shipRecord.groupID,
-        categoryID: shipRecord.categoryID,
-        customInfo: shipRecord.customInfo || "",
-        singleton: shipRecord.singleton,
-        stacksize: shipRecord.stacksize,
+        itemID: storedItem.itemID,
+        typeID: storedItem.typeID,
+        shipName: storedItem.itemName,
+        ownerID: storedItem.ownerID,
+        locationID: storedItem.locationID,
+        flagID: storedItem.flagID,
+        quantity: storedItem.quantity,
+        groupID: storedItem.groupID,
+        categoryID: storedItem.categoryID,
+        customInfo: storedItem.customInfo || "",
+        singleton: storedItem.singleton,
+        stacksize: storedItem.stacksize,
       };
     }
 
@@ -670,6 +1236,10 @@ class InvBrokerService extends BaseService {
     const boundShip =
       findCharacterShip(charId, numericItemId) ||
       findShipItemById(numericItemId);
+    const boundItem =
+      boundShip ||
+      findItemById(numericItemId) ||
+      null;
     const explicitLocationID =
       this._extractKwarg(kwargs, "locationID") ??
       (args && args.length > 2 ? args[2] : undefined);
@@ -683,13 +1253,13 @@ class InvBrokerService extends BaseService {
       boundContext.locationID !== undefined
         ? this._normalizeInventoryId(boundContext.locationID)
         : 0;
-    const shipLocationID = boundShip
-      ? this._normalizeInventoryId(boundShip.locationID)
+    const shipLocationID = boundItem
+      ? this._normalizeInventoryId(boundItem.locationID)
       : 0;
     const resolvedLocationID =
       normalizedExplicitLocationID > 0
         ? normalizedExplicitLocationID
-        : boundShip && inheritedLocationID > 0
+        : boundItem && inheritedLocationID > 0
           ? inheritedLocationID
           : shipLocationID > 0
             ? shipLocationID
@@ -831,10 +1401,9 @@ class InvBrokerService extends BaseService {
     const numericItemID = this._normalizeInventoryId(itemID);
     const isCharacterItem = numericItemID === this._getCharacterId(session);
     const skillRecord = this._findCharacterSkillRecord(session, numericItemID);
-    const shipRecord = findCharacterShip(
-      this._getCharacterId(session),
-      numericItemID,
-    );
+    const shipRecord =
+      findCharacterShip(this._getCharacterId(session), numericItemID) ||
+      findItemById(numericItemID);
     const overrides = isCharacterItem
       ? this._buildCharacterItemOverrides(session)
       : shipRecord || skillRecord
@@ -942,20 +1511,127 @@ class InvBrokerService extends BaseService {
 
   Handle_StackAll(args, session, kwargs) {
     this._traceInventory("StackAll", session, { args, kwargs });
-    log.debug("[InvBroker] StackAll");
+    const boundContext = this._getBoundContext(session);
+    const requestedFlag =
+      (args && args.length > 0 ? args[0] : null) ??
+      this._extractKwarg(kwargs, "flag") ??
+      (boundContext ? boundContext.flagID : ITEM_FLAGS.HANGAR);
+    const containerLocationID =
+      boundContext &&
+      boundContext.locationID !== null &&
+      boundContext.locationID !== undefined
+        ? this._normalizeInventoryId(boundContext.locationID, 0)
+        : this._getStationId(session);
+    const containerFlagID =
+      this._normalizeInventoryId(
+        requestedFlag === STATION_ITEM_HANGAR_FLAG
+          ? ITEM_FLAGS.HANGAR
+          : requestedFlag,
+        ITEM_FLAGS.HANGAR,
+      );
+
+    log.debug(
+      `[InvBroker] StackAll(locationID=${containerLocationID}, flagID=${containerFlagID})`,
+    );
+
+    const stackResult = stackAllInventoryItemsInContainer(
+      this._getCharacterId(session),
+      containerLocationID,
+      containerFlagID,
+    );
+    if (!stackResult.success) {
+      log.warn(
+        `[InvBroker] StackAll failed locationID=${containerLocationID} flagID=${containerFlagID}: ${stackResult.errorMsg}`,
+      );
+      return null;
+    }
+
+    for (const change of stackResult.data) {
+      if (!change || !change.updatedItem) {
+        continue;
+      }
+
+      syncInventoryItemForSession(
+        session,
+        change.updatedItem,
+        change.previousData || {},
+        {
+          emitCfgLocation: true,
+        },
+      );
+
+      for (const removedItem of change.removedItems || []) {
+        syncInventoryItemForSession(
+          session,
+          {
+            ...removedItem,
+            locationID: 0,
+            flagID: 0,
+            quantity: 0,
+            stacksize: 0,
+          },
+          {
+            locationID: removedItem.locationID,
+            flagID: removedItem.flagID,
+            quantity: removedItem.quantity,
+            singleton: removedItem.singleton,
+            stacksize: removedItem.stacksize,
+          },
+          {
+            emitCfgLocation: true,
+          },
+        );
+      }
+    }
+
     return null;
   }
 
   Handle_Add(args, session, kwargs) {
     this._traceInventory("Add", session, { args, kwargs });
     log.debug("[InvBroker] Add");
-    return null;
+    const itemIds = this._normalizeItemIdList(args && args.length > 0 ? args[0] : null);
+    return this._applyBoundInventoryMove(itemIds, session, kwargs, args);
   }
 
   Handle_MultiAdd(args, session, kwargs) {
     this._traceInventory("MultiAdd", session, { args, kwargs });
     log.debug("[InvBroker] MultiAdd");
-    return null;
+    const itemIds = this._normalizeItemIdList(args && args.length > 0 ? args[0] : null);
+    return this._applyBoundInventoryMove(itemIds, session, kwargs, args);
+  }
+
+  Handle_Remove(args, session, kwargs) {
+    this._traceInventory("Remove", session, { args, kwargs });
+    log.debug("[InvBroker] Remove");
+    const itemIds = this._normalizeItemIdList(args && args.length > 0 ? args[0] : null);
+    return this._applyBoundInventoryMove(itemIds, session, kwargs, args);
+  }
+
+  Handle_MultiRemove(args, session, kwargs) {
+    this._traceInventory("MultiRemove", session, { args, kwargs });
+    log.debug("[InvBroker] MultiRemove");
+    const itemIds = this._normalizeItemIdList(args && args.length > 0 ? args[0] : null);
+    return this._applyBoundInventoryMove(itemIds, session, kwargs, args);
+  }
+
+  Handle_Move(args, session, kwargs) {
+    this._traceInventory("Move", session, { args, kwargs });
+    log.debug("[InvBroker] Move");
+    const itemIds = this._normalizeItemIdList(args && args.length > 0 ? args[0] : null);
+    return this._applyBoundInventoryMove(itemIds, session, kwargs, args);
+  }
+
+  Handle_MultiMove(args, session, kwargs) {
+    this._traceInventory("MultiMove", session, { args, kwargs });
+    log.debug("[InvBroker] MultiMove");
+    const itemIds = this._normalizeItemIdList(args && args.length > 0 ? args[0] : null);
+    return this._applyBoundInventoryMove(itemIds, session, kwargs, args);
+  }
+
+  Handle_StripFitting(args, session, kwargs) {
+    const boundContext = this._getBoundContext(session);
+    return this._stripFitting(boundContext, session);
   }
 
   Handle_ListDroneBay(args, session, kwargs) {

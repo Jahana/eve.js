@@ -203,6 +203,8 @@ module.exports = function (serviceManager) {
       log.success(`eve.js is running!`);
       log.success(`(port: ${config.serverPort})`);
     });
+
+  return server;
 };
 
 /**

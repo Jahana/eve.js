@@ -50,6 +50,10 @@ const SESSION_CHANGE_ALLOWED_KEYS = new Set([
 ]);
 
 function appendSessionChangeDebug(entry) {
+  if (!config.enableSessionChangeDebugTrace) {
+    return;
+  }
+
   try {
     fs.mkdirSync(path.dirname(sessionChangeDebugPath), { recursive: true });
     fs.appendFileSync(
@@ -187,9 +191,11 @@ class ClientSession {
     const changeEntries = [];
     for (const [key, [oldVal, newVal]] of Object.entries(changes)) {
       if (!SESSION_CHANGE_ALLOWED_KEYS.has(key)) {
-        appendSessionChangeDebug(
-          `drop key=${key} old=${JSON.stringify(oldVal, (k, v) => (typeof v === "bigint" ? v.toString() : v))} new=${JSON.stringify(newVal, (k, v) => (typeof v === "bigint" ? v.toString() : v))}`,
-        );
+        if (config.enableSessionChangeDebugTrace) {
+          appendSessionChangeDebug(
+            `drop key=${key} old=${JSON.stringify(oldVal, (k, v) => (typeof v === "bigint" ? v.toString() : v))} new=${JSON.stringify(newVal, (k, v) => (typeof v === "bigint" ? v.toString() : v))}`,
+          );
+        }
         continue;
       }
       changeEntries.push([key, [oldVal, newVal]]);
@@ -201,9 +207,11 @@ class ClientSession {
           : BigInt(options.sessionId || 0)
         : this.sid;
 
-    appendSessionChangeDebug(
-      `send sid=${String(sessionID)} keys=${JSON.stringify(changeEntries.map(([key]) => key))} payload=${JSON.stringify(changeEntries, (k, v) => (typeof v === "bigint" ? v.toString() : v))}`,
-    );
+    if (config.enableSessionChangeDebugTrace) {
+      appendSessionChangeDebug(
+        `send sid=${String(sessionID)} keys=${JSON.stringify(changeEntries.map(([key]) => key))} payload=${JSON.stringify(changeEntries, (k, v) => (typeof v === "bigint" ? v.toString() : v))}`,
+      );
+    }
 
     // SessionChangeNotification payload per General.xmlp:
     //   tuple(sessionID: long, tuple(clueless: int, changes: dict), nodesOfInterest: listInt)
@@ -314,4 +322,4 @@ class ClientSession {
   }
 }
 
-module.exports = ClientSession;
+module.exports = ClientSession

@@ -45,6 +45,10 @@ function readTlsCredentials() {
 }
 
 function writeTranscript(direction, xml) {
+  if (!config.enableXmppTranscriptTrace) {
+    return;
+  }
+
   try {
     ensureTranscriptDir();
     fs.appendFileSync(

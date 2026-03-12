@@ -1,19 +1,31 @@
 const {
   spawnShipInHangarForSession,
   getActiveShipRecord,
+  activateShipForSession,
+  syncInventoryItemForSession,
 } = require("../character/characterState");
 const sessionRegistry = require("./sessionRegistry");
 const {
   getAllItems,
   getCharacterHangarShipItems,
+  createInventoryItemForCharacter,
+  ITEM_FLAGS,
 } = require("../inventory/itemStore");
+const {
+  resolveModuleByTypeID,
+  resolveModuleByName,
+} = require("../inventory/moduleTypeRegistry");
 const {
   getCharacterWallet,
   setCharacterBalance,
   adjustCharacterBalance,
 } = require("../account/walletState");
-const { resolveShipByName } = require("./shipTypeRegistry");
-const { teleportSession } = require("../../space/transitions");
+const {
+  resolveShipByName,
+  resolveShipByTypeID,
+} = require("./shipTypeRegistry");
+const { getHotReloadController } = require("../../hotReload");
+const COMMAND_FEEDBACK_DELAY_MS = 150;
 
 const DEFAULT_MOTD_MESSAGE = [
   "Welcome to EvEJS.",
@@ -30,7 +42,10 @@ const AVAILABLE_SLASH_COMMANDS = [
   "hangar",
   "help",
   "item",
+  "fit",
+  "load",
   "motd",
+  "reload",
   "session",
   "setisk",
   "ship",
@@ -44,6 +59,7 @@ const COMMANDS_HELP_TEXT = [
   "Commands:",
   "/help",
   "/motd",
+  "/reload",
   "/where",
   "/who",
   "/wallet",
@@ -51,6 +67,10 @@ const COMMANDS_HELP_TEXT = [
   "/setisk <amount>",
   "/ship <ship name>",
   "/giveme <ship name>",
+  "/load <character|me> <typeID> [quantity]",
+  "/load <ship name|typeID|DNA|EFT>",
+  "/fit <character|me> <typeID> [quantity]",
+  "/fit <ship name|typeID|DNA|EFT>",
   "/hangar",
   "/item <itemID>",
   "/typeinfo <ship name>",
@@ -61,6 +81,10 @@ const COMMANDS_HELP_TEXT = [
 
 function normalizeCommandName(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function getTeleportSession() {
+  return require("../../space/transitions").teleportSession;
 }
 
 function formatIsk(value) {
@@ -117,7 +141,18 @@ function emitChatFeedback(chatHub, session, options, message) {
     session &&
     (!options || options.emitChatFeedback !== false)
   ) {
-    chatHub.sendSystemMessage(session, message);
+    const delayMs =
+      options && Number.isFinite(Number(options.chatFeedbackDelayMs))
+        ? Math.max(0, Number(options.chatFeedbackDelayMs))
+        : COMMAND_FEEDBACK_DELAY_MS;
+
+    setTimeout(() => {
+      if (!session.socket || session.socket.destroyed) {
+        return;
+      }
+
+      chatHub.sendSystemMessage(session, message);
+    }, delayMs);
   }
 }
 
@@ -322,6 +357,479 @@ function handleShipSpawn(commandLabel, session, argumentText, chatHub, options) 
   );
 }
 
+function unquoteArgument(value) {
+  const text = String(value || "").trim();
+  if (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith("'") && text.endsWith("'"))
+  ) {
+    return text.slice(1, -1);
+  }
+
+  return text;
+}
+
+function parseLegacyLoadRequest(argumentText) {
+  const match =
+    /^\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s+(\d+)(?:\s+(\d+))?\s*$/.exec(
+      String(argumentText || ""),
+    );
+  if (!match) {
+    return null;
+  }
+
+  const targetText = unquoteArgument(match[1] || match[2] || match[3] || "");
+  const typeID = Number(match[4]);
+  const quantity = match[5] ? Number(match[5]) : 1;
+  if (!targetText || !Number.isInteger(typeID) || typeID <= 0) {
+    return null;
+  }
+
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    return {
+      success: false,
+      errorMsg: "INVALID_QUANTITY",
+      targetText,
+      typeID,
+      quantity,
+    };
+  }
+
+  return {
+    success: true,
+    targetText,
+    typeID,
+    quantity,
+  };
+}
+
+function grantLegacyTypeToSession(targetSession, typeID, quantity) {
+  if (!targetSession || !targetSession.characterID) {
+    return {
+      success: false,
+      errorMsg: "CHARACTER_NOT_SELECTED",
+    };
+  }
+
+  const shipType = resolveShipByTypeID(typeID);
+  if (shipType) {
+    const stationId = targetSession.stationid || targetSession.stationID;
+    if (!stationId) {
+      return {
+        success: false,
+        errorMsg: "DOCK_REQUIRED_FOR_SHIP",
+      };
+    }
+
+    const spawnedShips = [];
+    for (let index = 0; index < quantity; index += 1) {
+      const spawnResult = spawnShipInHangarForSession(targetSession, shipType);
+      if (!spawnResult.success) {
+        return spawnResult;
+      }
+
+      spawnedShips.push(spawnResult.ship);
+    }
+
+    return {
+      success: true,
+      kind: "ship",
+      quantity,
+      entry: shipType,
+      containerLabel: "ship hangar",
+      items: spawnedShips,
+    };
+  }
+
+  const stationId = targetSession.stationid || targetSession.stationID;
+  const shipId = targetSession.shipID || targetSession.shipid || 0;
+  const moduleType = resolveModuleByTypeID(typeID);
+  if (!moduleType) {
+    return {
+      success: false,
+      errorMsg: "UNSUPPORTED_TYPE_ID",
+    };
+  }
+
+  const locationID = stationId || shipId;
+  const flagID = stationId ? ITEM_FLAGS.HANGAR : shipId ? ITEM_FLAGS.CARGO_HOLD : 0;
+  if (!locationID || !flagID) {
+    return {
+      success: false,
+      errorMsg: "NO_DESTINATION",
+    };
+  }
+
+  const createResult = createInventoryItemForCharacter(
+    targetSession.characterID,
+    locationID,
+    moduleType,
+    {
+      flagID,
+      quantity,
+      stacksize: quantity,
+      singleton: 0,
+    },
+  );
+  if (!createResult.success) {
+    return createResult;
+  }
+
+  syncInventoryItemForSession(
+    targetSession,
+    createResult.data,
+    createResult.previousData || {
+      locationID: 0,
+      flagID: 0,
+      quantity: 0,
+      singleton: createResult.data.singleton,
+      stacksize: 0,
+    },
+    {
+      emitCfgLocation: true,
+    },
+  );
+
+  return {
+    success: true,
+    kind: "item",
+    quantity,
+    entry: createResult.data,
+    requestedTypeID: typeID,
+    containerLabel: stationId ? "item hangar" : "cargo hold",
+  };
+}
+
+function resolveShipSpec(argumentText) {
+  const rawText = String(argumentText || "").trim();
+  if (!rawText) {
+    return {
+      success: false,
+      errorMsg: "SHIP_NAME_REQUIRED",
+      suggestions: [],
+    };
+  }
+
+  const normalizedText = rawText.replace(/^<url=fitting:/i, "").replace(/>.*$/s, "");
+  const dnaMatch = /^(\d+)(?::.*)?$/.exec(normalizedText);
+  if (
+    dnaMatch &&
+    (normalizedText.includes(";") || normalizedText.includes(":"))
+  ) {
+    const byType = resolveShipByTypeID(Number(dnaMatch[1]));
+    if (!byType) {
+      return {
+        success: false,
+        errorMsg: "SHIP_NOT_FOUND",
+        suggestions: [],
+      };
+    }
+
+    return {
+      success: true,
+      match: byType,
+      source: "DNA",
+      fittingPayloadIncluded: normalizedText.includes(";"),
+    };
+  }
+
+  const eftMatch = /^\[([^,\]]+)\s*,/m.exec(rawText);
+  if (eftMatch) {
+    const lookup = resolveShipByName(eftMatch[1]);
+    if (lookup.success) {
+      return {
+        ...lookup,
+        source: "EFT",
+        fittingPayloadIncluded: true,
+      };
+    }
+
+    return lookup;
+  }
+
+  const numericTypeID = Number(rawText);
+  if (Number.isInteger(numericTypeID) && numericTypeID > 0) {
+    const byType = resolveShipByTypeID(numericTypeID);
+    if (byType) {
+      return {
+        success: true,
+        match: byType,
+        source: "typeID",
+        fittingPayloadIncluded: false,
+      };
+    }
+  }
+
+  const lookup = resolveShipByName(rawText);
+  if (!lookup.success) {
+    return lookup;
+  }
+
+  return {
+    ...lookup,
+    source: "name",
+    fittingPayloadIncluded: false,
+  };
+}
+
+function loadShipForSession(session, shipSpec) {
+  if (!session || !session.characterID) {
+    return {
+      success: false,
+      errorMsg: "CHARACTER_NOT_SELECTED",
+    };
+  }
+
+  const stationId = session.stationid || session.stationID;
+  if (!stationId) {
+    return {
+      success: false,
+      errorMsg: "DOCK_REQUIRED",
+    };
+  }
+
+  const activeShip = getActiveShipRecord(session.characterID);
+  if (activeShip && Number(activeShip.typeID || 0) === Number(shipSpec.typeID || 0)) {
+    return {
+      success: true,
+      alreadyActive: true,
+      created: false,
+      ship: activeShip,
+    };
+  }
+
+  const hangarShips = getCharacterHangarShipItems(session.characterID, stationId);
+  const existingShip =
+    hangarShips.find(
+      (ship) => Number(ship.typeID || 0) === Number(shipSpec.typeID || 0),
+    ) || null;
+  let targetShip = existingShip;
+  let created = false;
+
+  if (!targetShip) {
+    const spawnResult = spawnShipInHangarForSession(session, shipSpec);
+    if (!spawnResult.success) {
+      return spawnResult;
+    }
+
+    targetShip = spawnResult.ship;
+    created = Boolean(spawnResult.created);
+  }
+
+  const activationResult = activateShipForSession(session, targetShip.itemID, {
+    emitNotifications: true,
+    logSelection: true,
+  });
+  if (!activationResult.success) {
+    return activationResult;
+  }
+
+  return {
+    success: true,
+    alreadyActive: false,
+    created,
+    ship: activationResult.activeShip || targetShip,
+  };
+}
+
+function handleLoadLikeCommand(commandLabel, session, argumentText, chatHub, options) {
+  if (!argumentText) {
+    return handledResult(
+      chatHub,
+      session,
+      options,
+      `Usage: /${commandLabel} <character|me> <typeID> [quantity] | <ship name|typeID|DNA|EFT>`,
+    );
+  }
+
+  const legacyLoadRequest = parseLegacyLoadRequest(argumentText);
+  if (legacyLoadRequest) {
+    if (!legacyLoadRequest.success) {
+      return handledResult(
+        chatHub,
+        session,
+        options,
+        `Usage: /${commandLabel} <character|me> <typeID> [quantity]`,
+      );
+    }
+
+    const targetSession = resolveTeleportTargetSession(
+      session,
+      legacyLoadRequest.targetText,
+    );
+    if (!targetSession) {
+      return handledResult(
+        chatHub,
+        session,
+        options,
+        `Character not found: ${legacyLoadRequest.targetText}.`,
+      );
+    }
+
+    const grantResult = grantLegacyTypeToSession(
+      targetSession,
+      legacyLoadRequest.typeID,
+      legacyLoadRequest.quantity,
+    );
+    if (!grantResult.success) {
+      let message = `${commandLabel} failed.`;
+      if (grantResult.errorMsg === "DOCK_REQUIRED") {
+        message = "You must be docked before spawning ships into the hangar.";
+      } else if (grantResult.errorMsg === "DOCK_REQUIRED_FOR_SHIP") {
+        message = "You must be docked before loading ships by typeID.";
+      } else if (grantResult.errorMsg === "CHARACTER_NOT_SELECTED") {
+        message = "Select a character first.";
+      } else if (grantResult.errorMsg === "NO_DESTINATION") {
+        message = "Target character must be docked or have an active ship.";
+      } else if (grantResult.errorMsg === "UNSUPPORTED_TYPE_ID") {
+        message = `Unsupported typeID: ${legacyLoadRequest.typeID}. Use a valid ship/module typeID.`;
+      }
+      return handledResult(chatHub, session, options, message);
+    }
+
+    const targetName =
+      targetSession.characterName || targetSession.userName || legacyLoadRequest.targetText;
+    const fitNote =
+      commandLabel === "fit"
+        ? " Module fitting is not implemented yet, so the item was only added to inventory."
+        : "";
+    const descriptor =
+      grantResult.kind === "ship"
+        ? grantResult.entry.name
+        : grantResult.entry.itemName || grantResult.entry.name || `typeID ${legacyLoadRequest.typeID}`;
+    const quantityText =
+      grantResult.quantity > 1 ? ` x${grantResult.quantity}` : "";
+    return handledResult(
+      chatHub,
+      session,
+      options,
+      `Loaded ${descriptor}${quantityText} for ${targetName} into the ${grantResult.containerLabel}.${fitNote}`.trim(),
+    );
+  }
+
+  const shipSpec = resolveShipSpec(argumentText);
+  if (!shipSpec.success) {
+    if (shipSpec.errorMsg === "SHIP_NOT_FOUND") {
+      const numericTypeID = Number(argumentText);
+      const moduleByTypeID =
+        Number.isInteger(numericTypeID) && numericTypeID > 0
+          ? resolveModuleByTypeID(numericTypeID)
+          : null;
+      const moduleLookup =
+        moduleByTypeID
+          ? {
+              success: true,
+              match: moduleByTypeID,
+              suggestions: [],
+            }
+          : Number.isInteger(numericTypeID) && numericTypeID > 0
+            ? {
+                success: false,
+                match: null,
+                suggestions: [],
+                errorMsg: "MODULE_NOT_FOUND",
+              }
+            : resolveModuleByName(argumentText);
+
+      if (moduleLookup && moduleLookup.success && moduleLookup.match) {
+        const grantResult = grantLegacyTypeToSession(
+          session,
+          moduleLookup.match.typeID,
+          1,
+        );
+        if (!grantResult.success) {
+          let message = `${commandLabel} failed.`;
+          if (grantResult.errorMsg === "CHARACTER_NOT_SELECTED") {
+            message = "Select a character first.";
+          } else if (grantResult.errorMsg === "NO_DESTINATION") {
+            message = "You must be docked or have an active ship to receive modules.";
+          } else if (grantResult.errorMsg === "UNSUPPORTED_TYPE_ID") {
+            message = `Unsupported typeID: ${moduleLookup.match.typeID}.`;
+          }
+          return handledResult(chatHub, session, options, message);
+        }
+
+        const fitNote =
+          commandLabel === "fit"
+            ? " Module fitting is not implemented yet, so the item was only added to inventory."
+            : "";
+        return handledResult(
+          chatHub,
+          session,
+          options,
+          `Loaded ${moduleLookup.match.name} into the ${grantResult.containerLabel}.${fitNote}`.trim(),
+        );
+      }
+
+      const combinedSuggestions = [
+        ...(Array.isArray(shipSpec.suggestions) ? shipSpec.suggestions : []),
+        ...(moduleLookup && Array.isArray(moduleLookup.suggestions)
+          ? moduleLookup.suggestions
+          : []),
+      ]
+        .filter(Boolean)
+        .slice(0, 5);
+      const message = Number.isInteger(numericTypeID) && numericTypeID > 0
+        ? `Unsupported typeID: ${numericTypeID}. Use a valid ship/module typeID.${formatSuggestions(combinedSuggestions)}`
+        : `Ship or module not found: ${argumentText}.${formatSuggestions(combinedSuggestions)}`;
+      return handledResult(chatHub, session, options, message.trim());
+    }
+
+    const message =
+      shipSpec.errorMsg === "AMBIGUOUS_SHIP_NAME"
+        ? `Ship name is ambiguous: ${argumentText}.${formatSuggestions(shipSpec.suggestions)}`.trim()
+        : `Usage: /${commandLabel} <character|me> <typeID> [quantity] | <ship name|typeID|DNA|EFT>`;
+    return handledResult(chatHub, session, options, message.trim());
+  }
+
+  const result = loadShipForSession(session, shipSpec.match);
+  if (!result.success) {
+    let message = `${commandLabel} failed.`;
+    if (result.errorMsg === "DOCK_REQUIRED") {
+      message = `You must be docked before using /${commandLabel}.`;
+    } else if (result.errorMsg === "CHARACTER_NOT_SELECTED") {
+      message = "Select a character first.";
+    }
+    return handledResult(chatHub, session, options, message);
+  }
+
+  const fitNote =
+    commandLabel === "fit" || shipSpec.fittingPayloadIncluded
+      ? " Module fitting is not implemented yet, so only the hull was loaded."
+      : "";
+  const actionText = result.alreadyActive
+    ? `${shipSpec.match.name} is already your active ship.`
+    : `${shipSpec.match.name} is now active${result.created ? " (new hull spawned)" : ""}.`;
+  return handledResult(
+    chatHub,
+    session,
+    options,
+    `${actionText} Source=${shipSpec.source}.${fitNote}`.trim(),
+  );
+}
+
+function getHotReloadSummary() {
+  const controller = getHotReloadController();
+  if (!controller) {
+    return "Hot reload is disabled.";
+  }
+
+  const status = controller.getStatus();
+  const lastReloadText = status.lastReloadAt
+    ? `last=${status.lastReloadAt}`
+    : "last=never";
+  const restartText = status.restartPending
+    ? `restart=pending(${(status.pendingRestartFiles || []).join(", ") || "unknown"})`
+    : "restart=clear";
+  return [
+    `Hot reload: watch=${status.watchEnabled ? "on" : "off"}`,
+    `watching=${status.watching ? "yes" : "no"}`,
+    `count=${status.reloadCount}`,
+    lastReloadText,
+    restartText,
+  ].join(" | ");
+}
+
 function executeChatCommand(session, rawMessage, chatHub, options = {}) {
   const trimmed = String(rawMessage || "").trim();
   if (!trimmed.startsWith("/") && !trimmed.startsWith(".")) {
@@ -352,6 +860,47 @@ function executeChatCommand(session, rawMessage, chatHub, options = {}) {
 
   if (command === "motd") {
     return handledResult(chatHub, session, options, DEFAULT_MOTD_MESSAGE);
+  }
+
+  if (command === "reload") {
+    const controller = getHotReloadController();
+    if (!controller) {
+      return handledResult(chatHub, session, options, "Hot reload is disabled.");
+    }
+
+    if (!argumentText || normalizeCommandName(argumentText) === "now") {
+      const result = controller.reloadNow("slash");
+      if (!result.success) {
+        return handledResult(
+          chatHub,
+          session,
+          options,
+          `Reload failed: ${result.error || "unknown error"}.`,
+        );
+      }
+
+      const restartNote =
+        result.restartRequiredFiles && result.restartRequiredFiles.length > 0
+          ? ` Restart still required for: ${result.restartRequiredFiles.join(", ")}.`
+          : "";
+      return handledResult(
+        chatHub,
+        session,
+        options,
+        `Reloaded ${result.serviceCount} services at ${result.at}.${restartNote}`.trim(),
+      );
+    }
+
+    if (normalizeCommandName(argumentText) === "status") {
+      return handledResult(chatHub, session, options, getHotReloadSummary());
+    }
+
+    return handledResult(
+      chatHub,
+      session,
+      options,
+      "Usage: /reload [now|status]",
+    );
   }
 
   if (command === "where") {
@@ -471,6 +1020,10 @@ function executeChatCommand(session, rawMessage, chatHub, options = {}) {
     return handleShipSpawn(command, session, argumentText, chatHub, options);
   }
 
+  if (command === "load" || command === "fit") {
+    return handleLoadLikeCommand(command, session, argumentText, chatHub, options);
+  }
+
   if (command === "hangar") {
     return handledResult(chatHub, session, options, getHangarSummary(session));
   }
@@ -563,7 +1116,7 @@ function executeChatCommand(session, rawMessage, chatHub, options = {}) {
       );
     }
 
-    const result = teleportSession(targetSession, destinationID);
+    const result = getTeleportSession()(targetSession, destinationID);
     if (!result.success) {
       let message = "Teleport failed.";
       if (result.errorMsg === "CHARACTER_NOT_SELECTED") {

@@ -8,12 +8,15 @@ const { resolveShipByTypeID } = require(path.join(
 ));
 const {
   ensureMigrated,
+  getAllItems,
   getCharacterShipItems,
   getCharacterHangarShipItems,
   findCharacterShipItem,
   getActiveShipItem,
   spawnShipInStationHangar,
   setActiveShipForCharacter,
+  deleteShipItem,
+  CAPSULE_TYPE_ID,
 } = require(path.join(__dirname, "../inventory/itemStore"));
 const {
   ensureCharacterSkills,
@@ -28,8 +31,8 @@ const CHARACTERS_TABLE = "characters";
 const INV_UPDATE_LOCATION = 3;
 const INV_UPDATE_FLAG = 4;
 const INV_UPDATE_QUANTITY = 5;
-const INV_UPDATE_STACKSIZE = 9;
-const INV_UPDATE_SINGLETON = 10;
+const INV_UPDATE_SINGLETON = 9;
+const INV_UPDATE_STACKSIZE = 10;
 const INVENTORY_ROW_DESCRIPTOR_COLUMNS = [
   ["itemID", 20],
   ["typeID", 3],
@@ -49,6 +52,13 @@ const EMPIRE_BY_CORPORATION = Object.freeze({
   1000009: 500003,
   1000006: 500004,
 });
+const FITTED_SLOT_FLAGS = Object.freeze([
+  11, 12, 13, 14, 15, 16, 17, 18,
+  19, 20, 21, 22, 23, 24, 25, 26,
+  27, 28, 29, 30, 31, 32, 33, 34,
+  92, 93, 94,
+]);
+const FITTED_SLOT_FLAG_SET = new Set(FITTED_SLOT_FLAGS);
 
 function cloneValue(value) {
   return JSON.parse(JSON.stringify(value));
@@ -409,7 +419,7 @@ function syncInventoryItemForSession(
     ]);
   }
 
-  log.info(
+  log.debug(
     `[CharacterState] Synced inventory item ${shipItem.itemID} (${shipItem.itemName || shipItem.typeID}) to client inventory`,
   );
 }
@@ -941,11 +951,62 @@ function activateShipForSession(session, shipId, options = {}) {
     const refreshedTargetShip = getActiveShipRecord(charId) || targetShip;
     const refreshQueue = [];
     const seenItemIds = new Set();
+    let capsuleRemovalState = null;
+    const targetPreviousState =
+      options && options.targetPreviousState && typeof options.targetPreviousState === "object"
+        ? options.targetPreviousState
+        : null;
 
     if (currentShip && currentShip.itemID !== targetShip.itemID) {
-      refreshQueue.push(currentShip);
+      const shouldConsumePreviousCapsule =
+        Number(currentShip.typeID || 0) === CAPSULE_TYPE_ID &&
+        Number(targetShip.typeID || 0) !== CAPSULE_TYPE_ID;
+
+      if (shouldConsumePreviousCapsule) {
+        const deletedCapsule = deleteShipItem(currentShip.itemID);
+        if (deletedCapsule.success && deletedCapsule.previousData) {
+          capsuleRemovalState = {
+            ...deletedCapsule.previousData,
+            locationID: 0,
+            flagID: 0,
+          };
+        } else if (deletedCapsule.errorMsg === "SHIP_NOT_FOUND") {
+          // Capsule cleanup may already have been applied by the item-store
+          // reconciliation path during active-ship sync. The DB is correct in
+          // that case, but the client still needs the removal notification.
+          capsuleRemovalState = {
+            ...currentShip,
+            locationID: 0,
+            flagID: 0,
+          };
+        } else {
+          log.warn(
+            `[CharState] Failed to remove boarded capsule ship=${currentShip.itemID} char=${charId}: ${deletedCapsule.errorMsg}`,
+          );
+          refreshQueue.push(currentShip);
+        }
+      } else {
+        refreshQueue.push(currentShip);
+      }
     }
     refreshQueue.push(refreshedTargetShip);
+
+    if (capsuleRemovalState) {
+      syncInventoryItemForSession(
+        session,
+        capsuleRemovalState,
+        {
+          locationID: currentShip.locationID,
+          flagID: currentShip.flagID,
+          quantity: currentShip.quantity,
+          singleton: currentShip.singleton,
+          stacksize: currentShip.stacksize,
+        },
+        {
+          emitCfgLocation: true,
+        },
+      );
+    }
 
     for (const shipItem of refreshQueue) {
       if (
@@ -956,16 +1017,20 @@ function activateShipForSession(session, shipId, options = {}) {
       }
 
       seenItemIds.add(shipItem.itemID);
+      const previousState =
+        targetPreviousState && shipItem.itemID === refreshedTargetShip.itemID
+          ? targetPreviousState
+          : {
+              locationID: shipItem.locationID,
+              flagID: shipItem.flagID,
+              quantity: shipItem.quantity,
+              singleton: shipItem.singleton,
+              stacksize: shipItem.stacksize,
+            };
       syncInventoryItemForSession(
         session,
         shipItem,
-        {
-          locationID: shipItem.locationID,
-          flagID: shipItem.flagID,
-          quantity: shipItem.quantity,
-          singleton: shipItem.singleton,
-          stacksize: shipItem.stacksize,
-        },
+        previousState,
         {
           emitCfgLocation: true,
         },
@@ -1026,6 +1091,101 @@ function setActiveShipForSession(session, shipType) {
   return spawnShipInHangarForSession(session, shipType);
 }
 
+function getFittedItemsForActiveShip(charId, shipId) {
+  const numericCharId = Number(charId || 0);
+  const numericShipId = Number(shipId || 0);
+  if (numericCharId <= 0 || numericShipId <= 0) {
+    return [];
+  }
+
+  const allItems = getAllItems();
+  const itemList = Array.isArray(allItems)
+    ? allItems
+    : Object.values(allItems || {});
+
+  return itemList
+    .filter(
+      (item) =>
+        item &&
+        Number(item.ownerID || 0) === numericCharId &&
+        Number(item.locationID || 0) === numericShipId &&
+        FITTED_SLOT_FLAG_SET.has(Number(item.flagID || 0)),
+    )
+    .sort((left, right) => {
+      if (Number(left.flagID || 0) !== Number(right.flagID || 0)) {
+        return Number(left.flagID || 0) - Number(right.flagID || 0);
+      }
+
+      return Number(left.itemID || 0) - Number(right.itemID || 0);
+    });
+}
+
+function syncActiveShipFittingForSession(session, options = {}) {
+  if (!session || !session.characterID) {
+    return {
+      success: false,
+      errorMsg: "CHARACTER_NOT_SELECTED",
+      syncedCount: 0,
+    };
+  }
+
+  const activeShip = getActiveShipRecord(session.characterID);
+  if (!activeShip || Number(activeShip.itemID || 0) <= 0) {
+    return {
+      success: false,
+      errorMsg: "SHIP_NOT_FOUND",
+      syncedCount: 0,
+    };
+  }
+
+  const emitCfgLocation = options.emitCfgLocation === true;
+  const forceRefresh = options.forceRefresh === true;
+  const buildPreviousState = (item) =>
+    forceRefresh
+      ? {
+          locationID: 0,
+          flagID: 0,
+          quantity: 0,
+          singleton: 0,
+          stacksize: 0,
+        }
+      : {
+          locationID: item.locationID,
+          flagID: item.flagID,
+          quantity: item.quantity,
+          singleton: item.singleton,
+          stacksize: item.stacksize,
+        };
+  syncInventoryItemForSession(
+    session,
+    activeShip,
+    buildPreviousState(activeShip),
+    {
+      emitCfgLocation,
+    },
+  );
+
+  const fittedItems = getFittedItemsForActiveShip(
+    session.characterID,
+    activeShip.itemID,
+  );
+  for (const item of fittedItems) {
+    syncInventoryItemForSession(
+      session,
+      item,
+      buildPreviousState(item),
+      {
+        emitCfgLocation,
+      },
+    );
+  }
+
+  return {
+    success: true,
+    syncedCount: fittedItems.length + 1,
+  };
+}
+
 module.exports = {
   CHARACTERS_TABLE,
   getCharacterRecord,
@@ -1041,6 +1201,7 @@ module.exports = {
   buildInventoryItemRow,
   buildItemChangePayload,
   syncInventoryItemForSession,
+  syncActiveShipFittingForSession,
   shouldFlushDeferredDockedShipSessionChange,
   flushDeferredDockedShipSessionChange,
   toBigInt,

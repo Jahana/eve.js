@@ -1,7 +1,13 @@
 {
+  "autoLaunch": false,
+  "serverPort": 26000,
+  "publicHost": "",
+  "microservicesBindHost": "0.0.0.0",
+  "hotReloadEnabled": true,
+  "reloadOnFileChange": true,
+  "hotReloadDebounceMs": 750,
+  "chatServerHost": "",
   "clientPath": "",
-  "autoLaunch": true,
   "devMode": true,
-  "logLevel": 2,
-  "serverPort": 26000
+  "logLevel": 2
 }

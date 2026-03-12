@@ -1,9 +1,11 @@
 const fs = require("fs");
 const path = require("path");
 
+const config = require(path.join(__dirname, "../config"));
 const log = require(path.join(__dirname, "../utils/logger"));
 const {
   updateShipItem,
+  listContainerItems,
 } = require(path.join(__dirname, "../services/inventory/itemStore"));
 const {
   currentFileTime,
@@ -51,6 +53,12 @@ const WARP_LONG_DISTANCE_AU = 24;
 const WARP_COMPLETION_DISTANCE_RATIO = 0.005;
 const WARP_COMPLETION_DISTANCE_MIN_METERS = 100000;
 const WARP_COMPLETION_DISTANCE_MAX_METERS = 2500000;
+const FITTED_SLOT_FLAGS = new Set([
+  11, 12, 13, 14, 15, 16, 17, 18,
+  19, 20, 21, 22, 23, 24, 25, 26,
+  27, 28, 29, 30, 31, 32, 33, 34,
+  92, 93, 94,
+]);
 
 let nextStamp = 0;
 let nextMovementTraceID = 1;
@@ -238,6 +246,10 @@ function armMovementTrace(entity, reason, context = {}, now = Date.now()) {
 }
 
 function appendMovementDebug(entry) {
+  if (!config.enableSpaceMovementDebugTrace) {
+    return;
+  }
+
   try {
     fs.mkdirSync(path.dirname(MOVEMENT_DEBUG_PATH), { recursive: true });
     fs.appendFileSync(
@@ -251,6 +263,10 @@ function appendMovementDebug(entry) {
 }
 
 function appendDestinyDebug(entry) {
+  if (!config.enableSpaceDestinyDebugTrace) {
+    return;
+  }
+
   try {
     fs.mkdirSync(path.dirname(DESTINY_DEBUG_PATH), { recursive: true });
     fs.appendFileSync(
@@ -264,6 +280,10 @@ function appendDestinyDebug(entry) {
 }
 
 function appendWarpDebug(entry) {
+  if (!config.enableSpaceWarpDebugTrace) {
+    return;
+  }
+
   try {
     fs.mkdirSync(path.dirname(WARP_DEBUG_PATH), { recursive: true });
     fs.appendFileSync(
@@ -837,7 +857,7 @@ function buildWarpRuntimeDiagnostics(entity, now = Date.now()) {
 }
 
 function logWarpDebug(event, entity, extra = {}) {
-  if (!entity) {
+  if (!entity || !config.enableSpaceWarpDebugTrace) {
     return;
   }
 
@@ -1223,7 +1243,11 @@ function summarizeDestinyArgs(name, args) {
 }
 
 function logDestinyDispatch(session, payloads, waitForBubble) {
-  if (!session || payloads.length === 0) {
+  if (
+    !session ||
+    payloads.length === 0 ||
+    !config.enableSpaceDestinyDebugTrace
+  ) {
     return;
   }
 
@@ -1258,7 +1282,7 @@ function clearPendingDock(entity) {
 }
 
 function logMovementDebug(event, entity, extra = {}) {
-  if (!entity) {
+  if (!entity || !config.enableSpaceMovementDebugTrace) {
     return;
   }
 
@@ -1419,6 +1443,22 @@ function buildWarpState(rawWarpState, position, warpSpeedAU) {
 function buildShipEntity(session, shipItem, systemID) {
   const movement =
     worldData.getMovementAttributesForType(shipItem.typeID) || null;
+  const fittedModules = listContainerItems(
+    shipItem.ownerID || session.characterID || 0,
+    shipItem.itemID,
+    null,
+  )
+    .filter((item) => FITTED_SLOT_FLAGS.has(Number(item.flagID || 0)))
+    .sort((left, right) => {
+      const leftFlag = Number(left.flagID || 0);
+      const rightFlag = Number(right.flagID || 0);
+      if (leftFlag !== rightFlag) {
+        return leftFlag - rightFlag;
+      }
+      return Number(left.itemID || 0) - Number(right.itemID || 0);
+    })
+    .map((item) => Number(item.itemID || 0))
+    .filter((itemID) => itemID > 0);
   const spaceState = shipItem.spaceState || {};
   const position = cloneVector(spaceState.position);
   const direction = normalizeVector(
@@ -1473,6 +1513,7 @@ function buildShipEntity(session, shipItem, systemID) {
     corporationID: session.corporationID || 0,
     allianceID: session.allianceID || 0,
     warFactionID: session.warFactionID || 0,
+    modules: fittedModules,
     position,
     velocity,
     direction,
@@ -1492,6 +1533,8 @@ function buildShipEntity(session, shipItem, systemID) {
         ? toFiniteNumber(movement.radius, 0)
         : 50,
     maxVelocity,
+    baseMaxVelocity: maxVelocity,
+    speedBoostMultiplier: 1,
     alignTime,
     maxAccelerationTime,
     agilitySeconds: deriveAgilitySeconds(alignTime, maxAccelerationTime),
@@ -3123,6 +3166,47 @@ class SolarSystemScene {
     return true;
   }
 
+  setShipSpeedMultiplier(session, shipID, multiplier) {
+    const numericShipID =
+      Number(shipID || 0) ||
+      Number(session && session._space ? session._space.shipID : 0);
+    const entity = this.getEntityByID(numericShipID);
+    if (!entity || entity.kind !== "ship") {
+      return false;
+    }
+
+    const normalizedMultiplier = clamp(
+      toFiniteNumber(multiplier, 1),
+      0.1,
+      20,
+    );
+    const baseMaxVelocity = Math.max(
+      toFiniteNumber(entity.baseMaxVelocity, entity.maxVelocity),
+      1,
+    );
+    const nextMaxVelocity = Math.max(baseMaxVelocity * normalizedMultiplier, 1);
+    const changed = Math.abs(nextMaxVelocity - toFiniteNumber(entity.maxVelocity, 0)) > 0.0001;
+
+    entity.baseMaxVelocity = baseMaxVelocity;
+    entity.speedBoostMultiplier = normalizedMultiplier;
+    entity.maxVelocity = nextMaxVelocity;
+    persistShipEntity(entity);
+
+    if (!changed) {
+      return true;
+    }
+
+    const stamp = getMovementStamp(Date.now());
+    this.broadcastMovementUpdates([
+      {
+        stamp,
+        payload: destiny.buildSetMaxSpeedPayload(entity.itemID, entity.maxVelocity),
+      },
+    ]);
+
+    return true;
+  }
+
   stop(session) {
     const entity = this.getShipEntityForSession(session);
     if (!entity || entity.pendingDock) {
@@ -3666,6 +3750,31 @@ class SolarSystemScene {
         });
       }
 
+      if (
+        entity.session &&
+        !entity.pendingDock &&
+        entity.kind === "ship" &&
+        Number(entity.dockingTargetID || 0) > 0
+      ) {
+        const dockingStation = this.getEntityByID(entity.dockingTargetID);
+        if (
+          dockingStation &&
+          dockingStation.kind === "station" &&
+          canShipDockAtStation(entity, dockingStation)
+        ) {
+          const dockResult = this.acceptDocking(
+            entity.session,
+            dockingStation.itemID,
+          );
+          if (dockResult && dockResult.success) {
+            logMovementDebug("dock.autoaccept", entity, {
+              stationID: dockingStation.itemID,
+              dockingState: buildDockingDebugState(entity, dockingStation),
+            });
+          }
+        }
+      }
+
       if (now - entity.lastPersistAt >= 2000 || result.warpCompleted) {
         persistShipEntity(entity);
       }
@@ -3810,6 +3919,11 @@ class SpaceRuntime {
   setSpeedFraction(session, fraction) {
     const scene = this.getSceneForSession(session);
     return scene ? scene.setSpeedFraction(session, fraction) : false;
+  }
+
+  setShipSpeedMultiplier(session, shipID, multiplier) {
+    const scene = this.getSceneForSession(session);
+    return scene ? scene.setShipSpeedMultiplier(session, shipID, multiplier) : false;
   }
 
   stop(session) {

@@ -32,22 +32,22 @@ this solves the issue where the client says ... has no attribute 'Index'
 ###     TO-DO LIST      ###
 ###########################
 
-- fix: when i leave current ship (to go to pod) then reboard my ship, pod stays in inventory...
+- fix: when server auto restarts because of no connected users, it fails to start back up
+- implement trash can
+- ship renaming
+- fix: errors in loglite.
+- moving items between hangars (in station and in space such as from fleet hangar to ship hangar etc)
 - if user signs in on different client, and user is already active in another client, kick active user off.
 - fix all stations orientation. they all face same direction.
-- sort the service files and place them in the correct folders
 - (50%) skill plan server (https)
 - (50%) factionwf server (https)
 - (50% done) (image server works, paperdolls not) set up image server + make paperdolls work
-- make a universal run script which does 3 things:
-    1: check if chat certificate is installed, if not, ask user if they would like to install it.
-    2: check if dependencies are installed, if not, ask user if they would like to install them.
-    3: start server
 
 ###########################
 ###   BIG TO-DO LIST    ###
 ###########################
 
+stations are not position + oriented properly.
 station services ((50%) fitting, market... etc)
 (50%) warping
 
@@ -55,8 +55,6 @@ station services ((50%) fitting, market... etc)
 ###   WHERE I LEFT OFF  ###
 ###########################
 implement services: 
-shipCosmeticsMgr::GetEnabledCosmetics()
-chatAuthenticationService::GetAuthenticationToken()
 skillMgr::PurchaseSkills()
 keeper::GetCurrentDungeonForCharacter()
 insurgencySolarsystem::GetLocalCampaignClientSnapshot()
@@ -64,3 +62,4 @@ bountyProxy::GetBountiesAndKillRights()
 scanMgr::SignalTrackerRegister()
 essMgr::GetDataForClientSolarSystem()
 achievementTrackerMgr::HasEverWarped()
+charMgr::MachoResolveObject()

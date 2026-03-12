@@ -7,7 +7,10 @@ const crypto = require("crypto");
 
 const config = require("../../config");
 const log = require("../../utils/logger");
-const { handleGatewayStream } = require("./publicGatewayLocal");
+
+function getPublicGatewayHandlers() {
+  return require("./publicGatewayLocal");
+}
 
 function shouldEnableLocalInterceptByDefault() {
   // The proxy may be advertised on a LAN address instead of loopback, but it
@@ -81,6 +84,38 @@ function makeHttp2Payload(headers) {
     host: headers[":authority"] || headers.host || null,
     timestamp: new Date().toISOString(),
   };
+}
+
+const COPYCAT_XML_RESPONSE = `<?xml version="1.0" encoding="utf-8"?>\n<copycat />\n`;
+const COPYCAT_INI_RESPONSE = "autosave=3\ndatabase=copycat.xml\n";
+
+function tryServeInsiderAsset(res, targetUrl) {
+  if (!targetUrl) {
+    return false;
+  }
+
+  const hostname = String(targetUrl.hostname || "").trim().toLowerCase();
+  const pathname = String(targetUrl.pathname || "").trim();
+
+  if (hostname !== "content.eveonline.com") {
+    return false;
+  }
+
+  if (pathname === "/QA/insider/copycat.xml") {
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/xml; charset=utf-8");
+    res.end(COPYCAT_XML_RESPONSE);
+    return true;
+  }
+
+  if (pathname === "/QA/insider/copycat.ini") {
+    res.statusCode = 200;
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+    res.end(COPYCAT_INI_RESPONSE);
+    return true;
+  }
+
+  return false;
 }
 
 function parseConnectTarget(connectUrl) {
@@ -260,7 +295,10 @@ function createLocalSecureResponder(httpsPort) {
       console.error("[LOCAL HTTP2 STREAM ERROR]", err.message);
     });
 
-    if (contentType.includes("application/grpc") && handleGatewayStream(stream, headers)) {
+    if (
+      contentType.includes("application/grpc") &&
+      getPublicGatewayHandlers().handleGatewayStream(stream, headers)
+    ) {
       return;
     }
 
@@ -397,6 +435,10 @@ function startServer() {
 
     if (shouldForwardLoopbackImage) {
       pipeHttpProxyRequest(req, res, targetUrl);
+      return;
+    }
+
+    if (tryServeInsiderAsset(res, targetUrl)) {
       return;
     }
 

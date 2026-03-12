@@ -12,6 +12,13 @@ const RUNTIME_TABLE = "shipCosmetics";
 const HUNDRED_NS_PER_MS = 10000n;
 const FILETIME_EPOCH_OFFSET = 116444736000000000n;
 let cachedCatalog = null;
+let cachedCatalogRevision = 0;
+
+function getCatalogRevision() {
+  return typeof database.getTableRevision === "function"
+    ? database.getTableRevision(CATALOG_TABLE)
+    : 0;
+}
 
 function cloneValue(value) {
   return JSON.parse(JSON.stringify(value));
@@ -86,7 +93,8 @@ function futureFileTimeString(days = 0) {
 }
 
 function readCatalog() {
-  if (cachedCatalog) {
+  const catalogRevision = getCatalogRevision();
+  if (cachedCatalog && cachedCatalogRevision === catalogRevision) {
     return cachedCatalog;
   }
 
@@ -111,6 +119,7 @@ function readCatalog() {
         ? root.licenseTypesByTypeID
         : {},
   };
+  cachedCatalogRevision = catalogRevision;
 
   return cachedCatalog;
 }

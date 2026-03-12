@@ -329,7 +329,7 @@ function buildSlimItemDict(entity) {
     entries.push(["allianceID", entity.allianceID || 0]);
     entries.push(["warFactionID", entity.warFactionID || 0]);
     entries.push(["charID", entity.characterID || 0]);
-    entries.push(["modules", buildList([])]);
+    entries.push(["modules", buildList(Array.isArray(entity.modules) ? entity.modules : [])]);
     entries.push(["securityStatus", 0.0]);
     entries.push(["bounty", 0.0]);
   } else if (entity.kind === "station") {

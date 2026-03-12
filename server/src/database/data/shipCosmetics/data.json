@@ -4,8 +4,19 @@
     "createdBy": "Codex",
     "createdAt": "2026-03-11"
   },
-  "characters": {},
+  "characters": {
+    "140000003": {
+      "skinOverridesBySkinID": {}
+    }
+  },
   "ships": {
+    "140000104": {
+      "shipID": 140000104,
+      "ownerID": 140000003,
+      "typeID": 24692,
+      "skinID": 10768,
+      "updatedAt": "2026-03-12T17:17:11.907Z"
+    },
     "140000107": {
       "shipID": 140000107,
       "ownerID": 140000003,
@@ -24,8 +35,8 @@
       "shipID": 140000112,
       "ownerID": 140000004,
       "typeID": 44996,
-      "skinID": 10216,
-      "updatedAt": "2026-03-12T04:38:20.243Z"
+      "skinID": 12391,
+      "updatedAt": "2026-03-12T07:03:54.138Z"
     },
     "140000130": {
       "shipID": 140000130,
@@ -68,6 +79,13 @@
       "typeID": 597,
       "skinID": 10674,
       "updatedAt": "2026-03-12T00:51:44.289Z"
+    },
+    "140000143": {
+      "shipID": 140000143,
+      "ownerID": 140000004,
+      "typeID": 11400,
+      "skinID": 12149,
+      "updatedAt": "2026-03-12T12:07:57.851Z"
     }
   }
 }

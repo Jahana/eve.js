@@ -217,9 +217,10 @@ function attachTeleportedSpaceSession(
     broadcast: true,
   });
 
-  if (beyonceBound) {
-    spaceRuntime.ensureInitialBallpark(session, { force: true });
-  }
+  // /tr should feel immediate regardless of previous docked/space state.
+  // Force a fresh bootstrap right after attach so the client does not wait
+  // for a later bind-driven initial-state path.
+  spaceRuntime.ensureInitialBallpark(session, { force: true });
 }
 
 function shouldRelocateWithinCurrentScene(session, systemID) {
