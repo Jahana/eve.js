@@ -220,12 +220,13 @@ function getShipDirection(entity) {
 
 function getShipWarpFactor(entity) {
   const warpState = entity && entity.warpState;
+  // DLL solver: tau0 = ball98 * 0.001, so ball98 = warpSpeedAU * 1000
   return toInt32(
     (warpState && warpState.warpSpeed) ||
       (toFiniteNumber(entity && entity.warpSpeedAU, 0) > 0
-        ? Math.round(entity.warpSpeedAU * 10)
-        : 30),
-    30,
+        ? Math.round(entity.warpSpeedAU * 1000)
+        : 3000),
+    3000,
   );
 }
 
@@ -625,7 +626,7 @@ function buildWarpToPayload(entityID, destination, distance, warpSpeed) {
       vector.y,
       vector.z,
       buildMarshalReal(distance, 0),
-      toInt32(warpSpeed, 30),
+      toInt32(warpSpeed, 3000),
     ],
   ];
 }
@@ -741,6 +742,9 @@ function normalizeGraphicInfo(graphicInfo) {
     (graphicInfo && typeof graphicInfo === "object" && graphicInfo.type)
   ) {
     return graphicInfo;
+  }
+  if (Array.isArray(graphicInfo)) {
+    return buildList(graphicInfo);
   }
   if (graphicInfo && typeof graphicInfo === "object" && !Array.isArray(graphicInfo)) {
     return buildDict(Object.entries(graphicInfo));

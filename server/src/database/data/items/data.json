@@ -107,8 +107,8 @@
     "itemID": 140000106,
     "typeID": 606,
     "ownerID": 140000005,
-    "locationID": 60000364,
-    "flagID": 4,
+    "locationID": 30000140,
+    "flagID": 0,
     "quantity": -1,
     "stacksize": 1,
     "singleton": 1,
@@ -120,7 +120,41 @@
     "volume": 24500,
     "capacity": 135,
     "radius": 40,
-    "spaceState": null,
+    "spaceState": {
+      "systemID": 30000140,
+      "position": {
+        "x": 5683290314593.844,
+        "y": 618716161604.5557,
+        "z": 3637064299743.9946
+      },
+      "velocity": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "direction": {
+        "x": -0.3676926651518328,
+        "y": 0.2674259452590093,
+        "z": 0.890665744146404
+      },
+      "targetPoint": {
+        "x": 5683290314593.844,
+        "y": 618716161604.5557,
+        "z": 3637064299743.9946
+      },
+      "speedFraction": 0,
+      "mode": "STOP",
+      "targetEntityID": null,
+      "followRange": 0,
+      "orbitDistance": 0,
+      "orbitNormal": {
+        "x": -0.9243313562725223,
+        "y": 0,
+        "z": -0.38159080677002616
+      },
+      "orbitSign": 1,
+      "warpState": null
+    },
     "conditionState": {
       "damage": 0,
       "charge": 1,

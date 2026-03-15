@@ -46,7 +46,10 @@ function flushPendingCommandSessionEffects(session) {
   session._pendingCommandInitialBallpark = null;
 
   if (pendingLocalChannelSync) {
-    chatHub.moveLocalSession(session, pendingLocalChannelSync.previousChannelID);
+    const chatHub = require(path.join(__dirname, "./chatHub"));
+    if (typeof chatHub.moveLocalSession === "function") {
+      chatHub.moveLocalSession(session, pendingLocalChannelSync.previousChannelID);
+    }
   }
 
   if (pendingInitialBallpark) {

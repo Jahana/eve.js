@@ -1,3 +1,4 @@
+WARPING!!!
 overview for players
 starmaps with stats as good as we can (with the exge cases/bugs ironed out rather than just UI cisual)
 stargates with CCP orientation (very cool how gates face each ofher)
@@ -16,4 +17,3 @@ station orientation worked on, but special cases such as jita 4-4 i think we hav
 show info for characters work
 known issue: 2 players will desync slightly  if together but not priority, warping is
 moon loading better
-WARP COMING SOON!!

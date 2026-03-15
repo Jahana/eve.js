@@ -62,6 +62,8 @@ const AVAILABLE_SLASH_COMMANDS = [
   "reload",
   "joinalliance",
   "loadsys",
+  "loadallsys",
+  "/loadallsys",
   "solar",
   "session",
   "setalliance",
@@ -205,7 +207,6 @@ function emitChatFeedback(chatHub, session, options, message) {
 
       chatHub.sendSystemMessage(session, message);
     }, delayMs);
-    chatHub.sendSystemMessage(session, message);
   }
 }
 
@@ -1368,6 +1369,59 @@ function handleLoadSystemCommand(session, chatHub, options) {
   );
 }
 
+function handleLoadAllSystemsCommand(session, chatHub, options) {
+  if (!session || !session.characterID) {
+    return handledResult(
+      chatHub,
+      session,
+      options,
+      "Select a character before loading all solar systems.",
+    );
+  }
+
+  const solarSystemIDs = worldData.getSolarSystems()
+    .map((system) => normalizePositiveInteger(system && system.solarSystemID))
+    .filter(Boolean);
+  if (solarSystemIDs.length === 0) {
+    return handledResult(
+      chatHub,
+      session,
+      options,
+      "No solar systems are available to preload.",
+    );
+  }
+
+  const alreadyLoaded = solarSystemIDs.filter((systemID) =>
+    spaceRuntime.isSolarSystemSceneLoaded(systemID),
+  );
+  const activationChanges = spaceRuntime.preloadSolarSystems(solarSystemIDs, {
+    broadcast: true,
+  });
+  const loadedNow = solarSystemIDs.filter((systemID) =>
+    spaceRuntime.isSolarSystemSceneLoaded(systemID),
+  );
+  const newlyLoaded = loadedNow.filter(
+    (systemID) => !alreadyLoaded.includes(systemID),
+  );
+  const failed = solarSystemIDs.filter(
+    (systemID) => !loadedNow.includes(systemID),
+  );
+
+  return handledResult(
+    chatHub,
+    session,
+    options,
+    [
+      "/loadallsys:",
+      `loaded ${loadedNow.length}/${solarSystemIDs.length} solar systems.`,
+      `newly loaded: ${newlyLoaded.length}.`,
+      `already loaded: ${alreadyLoaded.length}.`,
+      failed.length > 0 ? `failed: ${failed.length}.` : null,
+      `gate updates emitted: ${activationChanges.length}.`,
+    ].filter(Boolean).join(" "),
+  );
+}
+
 function executeChatCommand(session, rawMessage, chatHub, options = {}) {
   const trimmed = String(rawMessage || "").trim();
   if (!trimmed.startsWith("/") && !trimmed.startsWith(".")) {
@@ -1456,6 +1510,10 @@ function executeChatCommand(session, rawMessage, chatHub, options = {}) {
 
   if (command === "loadsys") {
     return handleLoadSystemCommand(session, chatHub, options);
+  }
+
+  if (command === "loadallsys") {
+    return handleLoadAllSystemsCommand(session, chatHub, options);
   }
 
   if (command === "who") {

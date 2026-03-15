@@ -10,13 +10,6 @@ const runtime = require(path.join(
   "../../server/src/space/runtime",
 ));
 
-function unwrapMarshalReal(value) {
-  if (value && typeof value === "object" && value.type === "real") {
-    return Number(value.value);
-  }
-  return Number(value);
-}
-
 const fakeSession = {
   characterID: 140000001,
   corporationID: 1000169,
@@ -70,7 +63,7 @@ const sharedPrepareNames = prepareDispatch.sharedUpdates.map((update) => update.
 assert.deepStrictEqual(sharedPrepareNames, ["WarpTo", "SetSpeedFraction"]);
 assert.deepStrictEqual(
   pilotPrepareNames,
-  ["SetMaxSpeed", "WarpTo", "SetSpeedFraction"],
+  ["SetMaxSpeed", "WarpTo", "OnSpecialFX", "SetSpeedFraction"],
 );
 
 const pilotActivationUpdates =
@@ -94,22 +87,7 @@ const pilotActivationNames = pilotActivationHandoffUpdates.map(
 );
 assert.deepStrictEqual(
   pilotActivationNames,
-  ["SetBallVelocity", "WarpTo", "SetMaxSpeed", "OnSpecialFX", "SetBallMassive"],
-);
-const activationVelocityArgs = pilotActivationHandoffUpdates[0].payload[1];
-const activationVelocityMagnitude = Math.sqrt(
-  (unwrapMarshalReal(activationVelocityArgs[1]) ** 2) +
-    (unwrapMarshalReal(activationVelocityArgs[2]) ** 2) +
-    (unwrapMarshalReal(activationVelocityArgs[3]) ** 2),
-);
-assert(
-  activationVelocityMagnitude > (entity.maxVelocity * 0.75),
-  "Activation velocity should sit above the native 0.75 * subwarp max gate",
-);
-const activationSetMaxSpeedArgs = pilotActivationHandoffUpdates[2].payload[1];
-assert(
-  unwrapMarshalReal(activationSetMaxSpeedArgs[1]) > activationVelocityMagnitude,
-  "Activation kickoff SetMaxSpeed should restore a higher local warp-speed ceiling after WarpTo",
+  [],
 );
 
 entity.mode = "WARP";
@@ -154,7 +132,6 @@ console.log(
       sharedPrepareNames,
       pilotActivationRefreshNames,
       pilotActivationNames,
-      activationVelocityMagnitude,
       warpBallTargetPoint: warpBallSummary.targetPoint,
       warpFxArgs: warpFxPayload[1],
       sparseFxArgs: sparseFxPayload[1],

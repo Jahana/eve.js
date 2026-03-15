@@ -27,9 +27,11 @@ const STARGATE_ACTIVATION_STATE = Object.freeze({
 });
 const STARGATE_ACTIVATION_TRANSITION_MS = 3000;
 const STARTUP_PRELOADED_SYSTEM_IDS = Object.freeze([30000142, 30000145]);
+const DEFAULT_STARGATE_INTERACTION_RADIUS = 1;
 const DEFAULT_STATION_INTERACTION_RADIUS = 1000;
 const DEFAULT_STATION_UNDOCK_DISTANCE = 8000;
 const DEFAULT_STATION_DOCKING_RADIUS = 2500;
+const WARP_EXIT_VARIANCE_RADIUS_METERS = 2500;
 const DEBUG_TEST_AUTO_TARGET_DEFAULT_RANGE_METERS = 250_000;
 const STATION_DOCK_ACCEPT_DELAY_MS = 4000;
 const LEGACY_STATION_NORMALIZATION_RADIUS = 100000;
@@ -80,9 +82,18 @@ const WARP_ACCEL_EXPONENT = 5;
 const WARP_DECEL_EXPONENT = 5;
 const WARP_MEDIUM_DISTANCE_AU = 12;
 const WARP_LONG_DISTANCE_AU = 24;
-const WARP_COMPLETION_DISTANCE_RATIO = 0.005;
-const WARP_COMPLETION_DISTANCE_MIN_METERS = 100000;
-const WARP_COMPLETION_DISTANCE_MAX_METERS = 2500000;
+// The native DLL solver starts its elapsed timer ~5 seconds after the server
+// builds the warp state (network transmission + client processing + WarpState
+// transition delay).  The old 100 km minimum caused the server's distance-based
+// completion check to fire while the DLL still had tens of thousands of km of
+// decel remaining, producing a visible snap-to-target teleport.
+// Fix: distance check effectively disabled (1 m threshold), and durationMs gets
+// a grace period (WARP_NATIVE_DECEL_GRACE_MS) so the server waits for the DLL
+// solver to finish its decel before sending the completion snap.
+const WARP_COMPLETION_DISTANCE_RATIO = 0;
+const WARP_COMPLETION_DISTANCE_MIN_METERS = 1;
+const WARP_COMPLETION_DISTANCE_MAX_METERS = 1;
+const WARP_NATIVE_DECEL_GRACE_MS = 5000;
 // Keep the prepare-phase pilot seed only slightly above subwarp max. The
 // activation AddBalls2 refresh still resets the ego ball's raw maxVelocity back
 // to its subwarp ceiling, so the only activation nudge that matches the client
@@ -98,7 +109,7 @@ const PILOT_WARP_FACTOR_OPTION_A_SCALE = 1.15;
 const ENABLE_PILOT_WARP_SOLVER_ASSIST_OPTION_B = false;
 const PILOT_WARP_SOLVER_ASSIST_SCALE = 1.5;
 const PILOT_WARP_SOLVER_ASSIST_LEAD_MS = DESTINY_STAMP_INTERVAL_MS;
-const ENABLE_PILOT_PRE_WARP_ADDBALL_REBASE = false;
+const ENABLE_PILOT_PRE_WARP_ADDBALL_REBASE = true;
 // `auditwarp7.txt` and `overshoot1.txt` both showed the pilot still receiving
 // a same-stamp AddBalls2 -> SetState replay on the already-existing ego ball at
 // activation. Michelle applies both full-state reads, so keep the live warp
@@ -667,6 +678,77 @@ function getStationWarpTargetPosition(station) {
   return cloneVector(station && station.position);
 }
 
+function getStargateInteractionRadius(stargate) {
+  const configuredRadius = toFiniteNumber(
+    stargate && stargate.interactionRadius,
+    0,
+  );
+  if (configuredRadius > 0) {
+    return configuredRadius;
+  }
+
+  // The SDE stores the physical gate radius in the `radius` field (e.g. 15 000 m
+  // for a Caldari system gate).  Use it so the ball's logical sphere matches the
+  // visual model, which fixes overview distance and warp-landing offsets.
+  const sdeRadius = toFiniteNumber(stargate && stargate.radius, 0);
+  if (sdeRadius > 0) {
+    return sdeRadius;
+  }
+
+  return DEFAULT_STARGATE_INTERACTION_RADIUS;
+}
+
+function getRandomPointInSphere(radius) {
+  const maxRadius = Math.max(0, toFiniteNumber(radius, 0));
+  if (maxRadius <= 0) {
+    return { x: 0, y: 0, z: 0 };
+  }
+
+  const theta = Math.random() * Math.PI * 2;
+  const vertical = (Math.random() * 2) - 1;
+  const distanceScale = Math.cbrt(Math.random());
+  const radialDistance = maxRadius * distanceScale;
+  const planarDistance = Math.sqrt(Math.max(0, 1 - (vertical * vertical))) * radialDistance;
+
+  return {
+    x: Math.cos(theta) * planarDistance,
+    y: vertical * radialDistance,
+    z: Math.sin(theta) * planarDistance,
+  };
+}
+
+function getStargateWarpExitPoint(entity, stargate, minimumRange = 0) {
+  const gateRadius = Math.max(0, toFiniteNumber(stargate && stargate.radius, 0));
+  const shipRadius = Math.max(0, toFiniteNumber(entity && entity.radius, 0));
+  // "Warp to 0" in EVE means 0 m from the EDGE of the object, which is
+  // gateRadius meters from the center.  The DLL uses the full gateRadius
+  // as the ball's collision sphere, so the ship must land outside it or the
+  // elastic collision physics will punt the ship at thousands of m/s.
+  const minimumOffset = gateRadius + shipRadius + 500;
+  const requestedRange = Math.max(minimumOffset, toFiniteNumber(minimumRange, 0));
+  const gatePosition = cloneVector(stargate && stargate.position);
+  const fallbackDirection = normalizeVector(
+    entity && entity.direction,
+    DEFAULT_RIGHT,
+  );
+  const fromGateToShip = normalizeVector(
+    subtractVectors(entity && entity.position, gatePosition),
+    fallbackDirection,
+  );
+
+  return addVectors(
+    gatePosition,
+    scaleVector(fromGateToShip, requestedRange),
+  );
+}
+
+function getStargateWarpLandingPoint(entity, stargate, minimumRange = 0) {
+  return addVectors(
+    getStargateWarpExitPoint(entity, stargate, minimumRange),
+    getRandomPointInSphere(WARP_EXIT_VARIANCE_RADIUS_METERS),
+  );
+}
+
 function getTargetMotionPosition(target, options = {}) {
   if (target && target.kind === "station") {
     return getStationApproachPosition(target);
@@ -1150,7 +1232,7 @@ function serializeWarpState(entity) {
       entity.warpState.decelRate,
       toFiniteNumber(entity.warpState.decelExponent, WARP_DECEL_EXPONENT),
     ),
-    warpSpeed: toInt(entity.warpState.warpSpeed, 30),
+    warpSpeed: toInt(entity.warpState.warpSpeed, 3000),
     commandStamp: toInt(entity.warpState.commandStamp, 0),
     startupGuidanceAtMs: toFiniteNumber(entity.warpState.startupGuidanceAtMs, 0),
     startupGuidanceStamp: toInt(entity.warpState.startupGuidanceStamp, 0),
@@ -1584,19 +1666,31 @@ function buildPilotPreWarpAddBallUpdate(entity, stamp) {
 }
 
 function buildPilotPreWarpRebaselineUpdates(entity, pendingWarp, stamp) {
+  // Align the rebaseline velocity to the exact warp direction so the DLL
+  // sees the ball already pointing at the destination.  The server's
+  // alignment check tolerates up to 6 degrees, but even a small mismatch
+  // makes the DLL's WarpState=1 solver do a visible re-alignment turn.
+  //
+  // IMPORTANT: Do NOT send SetBallPosition here.  Moving the ball to the
+  // server position changes the DLL's direction-to-target, which makes the
+  // just-aligned velocity no longer match, dropping alignment progress from
+  // 100% back to ~90%.  Only sync the velocity direction; the position
+  // difference at subwarp speeds is negligible.
+  const speed = magnitude(entity.velocity);
+  let alignedVelocity = entity.velocity;
+  if (speed > 0.5 && pendingWarp && pendingWarp.targetPoint) {
+    const warpDir = normalizeVector(
+      subtractVectors(pendingWarp.targetPoint, entity.position),
+      entity.direction,
+    );
+    alignedVelocity = scaleVector(warpDir, speed);
+  }
   return [
-    {
-      stamp,
-      payload: destiny.buildSetBallPositionPayload(
-        entity.itemID,
-        entity.position,
-      ),
-    },
     {
       stamp,
       payload: destiny.buildSetBallVelocityPayload(
         entity.itemID,
-        entity.velocity,
+        alignedVelocity,
       ),
     },
   ];
@@ -1630,7 +1724,7 @@ function getNominalWarpFactor(entity, warpState) {
     1,
     toInt(
       warpState && warpState.warpSpeed,
-      Math.round(toFiniteNumber(entity && entity.warpSpeedAU, 0) * 10),
+      Math.round(toFiniteNumber(entity && entity.warpSpeedAU, 0) * 1000),
     ),
   );
 }
@@ -1808,6 +1902,23 @@ function buildPilotWarpActivationKickoffUpdate(entity, stamp, warpState) {
   };
 }
 
+function buildEntityWarpInUpdate(entity, stamp, warpState) {
+  const warpFactor = Math.max(
+    1,
+    toInt(getNominalWarpFactor(entity, warpState), 30),
+  );
+  return {
+    stamp,
+    // Use stop-adjusted targetPoint since EntityWarpIn has no separate
+    // stopDistance parameter (DLL internally hardcodes stopDistance to 0).
+    payload: destiny.buildEntityWarpInPayload(
+      entity.itemID,
+      warpState.targetPoint,
+      warpFactor,
+    ),
+  };
+}
+
 function getPilotWarpNativeActivationSpeedFloor(entity) {
   return Math.max(
     (toFiniteNumber(entity && entity.maxVelocity, 0) *
@@ -1974,44 +2085,50 @@ function buildWarpPrepareDispatch(entity, stamp, warpState) {
       payload: destiny.buildSetSpeedFractionPayload(entity.itemID, 1),
     },
   ];
+  const pilotPrepareUpdates = [
+    buildPilotWarpSeedUpdate(entity, stamp),
+    sharedUpdates[0],
+    // Seed the pilot-local tunnel FX and destination label in the SAME
+    // prepare packet as WarpTo. Sending it later during WarpState=1 causes
+    // the mid-alignment rebase/regression, but omitting it entirely leaves
+    // the UI stuck on the generic "warp tunnel destination" fallback.
+    buildWarpStartEffectUpdate(entity, stamp),
+    sharedUpdates[1],
+  ];
 
   return {
     sharedUpdates,
-    pilotUpdates: [
-      buildPilotWarpSeedUpdate(entity, stamp),
-      ...sharedUpdates,
-    ],
+    pilotUpdates: pilotPrepareUpdates,
   };
 }
 
 function buildPilotWarpActivationUpdates(entity, stamp, warpState) {
-  const updates = [];
-  const activationVelocityUpdate = buildWarpActivationVelocityUpdate(
-    entity,
-    stamp,
-    warpState,
-  );
-  if (activationVelocityUpdate) {
-    updates.push(activationVelocityUpdate);
-  }
-  updates.push(buildWarpStartCommandUpdate(entity, stamp, warpState));
-  updates.push(buildPilotWarpActivationKickoffUpdate(entity, stamp, warpState));
-  if (toInt(warpState && warpState.effectStamp, 0) <= stamp) {
-    updates.push(
-      buildWarpStartEffectUpdate(
-        entity,
-        toInt(warpState && warpState.effectStamp, stamp),
-      ),
-    );
-  }
-  updates.push({
-    stamp,
-    payload: destiny.buildSetBallMassivePayload(entity.itemID, false),
-  });
-  return updates;
+  // The pilot-local warp FX/real destination label are now seeded in the
+  // initial prepare dispatch, so this activation phase intentionally stays
+  // empty to avoid another state-history rebase during WarpState=1.
+  // Return NOTHING for the pilot.  Any DoDestinyUpdate arriving between the
+  // WarpTo prepare dispatch and the DLL's own WarpState=2 transition causes
+  // a state-history rebase that disrupts alignment progress (the
+  // "establishing warp vector" bar drops from 100% to ~90%).  This happens
+  // even with a single merged packet — OnSpecialFX itself perturbs the
+  // DLL's WarpState=1 solver (it fires the warp tunnel visual which changes
+  // the client's IndicateWarp label and the SpaceObject's internal state).
+  //
+  // The DLL transitions WarpState 1→2 entirely on its own once the ball
+  // passes the alignment + speed thresholds.  The warp tunnel visual is
+  // triggered by the DLL's own WarpState=2 transition (IsWarping = True).
+  // OnSpecialFX is only needed for WATCHERS who see the ship warp from
+  // outside — the pilot's own effects are driven by the DLL state machine.
+  return [];
 }
 
 function buildWarpCompletionUpdates(entity, stamp) {
+  // Send a tiny velocity in the warp direction (entity.direction) instead of
+  // zero so the DLL retains the warp heading through the Stop transition.
+  // Sending (0,0,0) removes the velocity-derived heading, causing the DLL to
+  // snap to a pre-warp orientation once the ball exits warp mode.
+  const dir = normalizeVector(entity.direction, { x: 0, y: 0, z: 1 });
+  const headingVelocity = scaleVector(dir, 0.01);
   return [
     {
       stamp,
@@ -2023,11 +2140,11 @@ function buildWarpCompletionUpdates(entity, stamp) {
     },
     {
       stamp,
-      payload: destiny.buildSetBallVelocityPayload(entity.itemID, entity.velocity),
+      payload: destiny.buildStopPayload(entity.itemID),
     },
     {
       stamp,
-      payload: destiny.buildStopPayload(entity.itemID),
+      payload: destiny.buildSetBallVelocityPayload(entity.itemID, headingVelocity),
     },
   ];
 }
@@ -2289,7 +2406,7 @@ function buildStaticStargateEntity(stargate) {
     categoryID,
     itemName: stargate.itemName,
     ownerID: originSystemOwnerID || 1,
-    radius: stargate.radius || 15000,
+    radius: getStargateInteractionRadius(stargate),
     position: cloneVector(stargate.position),
     velocity: { x: 0, y: 0, z: 0 },
     typeName: getStargateTypeMetadata(stargate, "typeName") || null,
@@ -2378,7 +2495,7 @@ function buildWarpState(rawWarpState, position, warpSpeedAU) {
         getWarpDecelRate(resolvedWarpSpeedAU),
       0.001,
     ),
-    warpSpeed: toInt(rawWarpState.warpSpeed, Math.round(warpSpeedAU * 10)),
+    warpSpeed: toInt(rawWarpState.warpSpeed, Math.round(warpSpeedAU * 1000)),
     commandStamp: toInt(rawWarpState.commandStamp, 0),
     startupGuidanceAtMs,
     startupGuidanceStamp: toInt(rawWarpState.startupGuidanceStamp, 0),
@@ -2930,7 +3047,11 @@ function buildWarpProfile(entity, destination, options = {}) {
 
   return {
     startTimeMs: Date.now(),
-    durationMs: accelTimeMs + cruiseTimeMs + decelTimeMs,
+    durationMs:
+      accelTimeMs +
+      cruiseTimeMs +
+      decelTimeMs +
+      Math.max(WARP_NATIVE_DECEL_GRACE_MS, 0),
     accelTimeMs,
     cruiseTimeMs,
     decelTimeMs,
@@ -2947,7 +3068,9 @@ function buildWarpProfile(entity, destination, options = {}) {
     decelExponent: decelRate,
     accelRate,
     decelRate,
-    warpSpeed: Math.max(1, Math.round(warpSpeedAU * 10)),
+    // DLL solver uses tau0 = ball98 * 0.001, so ball98 = warpSpeedAU * 1000
+    // to match server-side kAccel = warpSpeedAU.
+    warpSpeed: Math.max(1, Math.round(warpSpeedAU * 1000)),
     commandStamp: toInt(options.commandStamp, 0),
     startupGuidanceStamp: toInt(options.startupGuidanceStamp, 0),
     startupGuidanceVelocity: cloneVector(
@@ -3183,7 +3306,7 @@ function getWarpProgress(warpState, now) {
   const cruiseMs = warpState.cruiseTimeMs;
   const decelMs = warpState.decelTimeMs;
   const resolvedWarpSpeedAU = Math.max(
-    toFiniteNumber(warpState.warpSpeed, 0) / 10,
+    toFiniteNumber(warpState.warpSpeed, 0) / 1000,
     toFiniteNumber(warpState.cruiseWarpSpeedMs, 0) / ONE_AU_IN_METERS,
     0.001,
   );
@@ -3726,6 +3849,37 @@ class SolarSystemScene {
     }
 
     this.sendDestinyUpdates(session, updates);
+  }
+
+  broadcastSpecialFx(shipID, guid, options = {}, visibilityEntity = null) {
+    const payload = destiny.buildOnSpecialFXPayload(shipID, guid, options);
+    const stamp = getNextStamp();
+    let deliveredCount = 0;
+
+    for (const session of this.sessions.values()) {
+      if (!isReadyForDestiny(session)) {
+        continue;
+      }
+      if (
+        visibilityEntity &&
+        !this.canSessionSeeDynamicEntity(session, visibilityEntity)
+      ) {
+        continue;
+      }
+
+      this.sendDestinyUpdates(session, [
+        {
+          stamp,
+          payload,
+        },
+      ]);
+      deliveredCount += 1;
+    }
+
+    return {
+      stamp,
+      deliveredCount,
+    };
   }
 
   broadcastSlimItemChanges(entities, excludedSession = null) {
@@ -4571,6 +4725,22 @@ class SolarSystemScene {
       };
     }
 
+    if (target.kind === "stargate") {
+      return this.warpToPoint(
+        session,
+        getStargateWarpLandingPoint(
+          entity,
+          target,
+          toFiniteNumber(options.minimumRange, 0),
+        ),
+        {
+          ...options,
+          stopDistance: 0,
+          targetEntityID: target.itemID,
+        },
+      );
+    }
+
     const stopDistance = getWarpStopDistanceForTarget(
       entity,
       target,
@@ -4854,47 +5024,19 @@ class SolarSystemScene {
             ENABLE_PILOT_PRE_WARP_ADDBALL_REBASE &&
             entity.session &&
             isReadyForDestiny(entity.session);
+          // Build rebaseline updates if enabled — these are merged into the
+          // SAME DoDestinyUpdate packet as activation so the DLL processes
+          // everything in a single state-history rebase.  The old two-tick
+          // separation (rebaseline on tick N, activation on tick N+1) caused
+          // two separate rebases; the second one disrupted alignment progress
+          // (100% → ~90% → 100%) because the replayed state diverged from
+          // the DLL's local simulation.
+          // Do NOT send any pilot rebaseline or activation updates.  ANY
+          // DoDestinyUpdate during WarpState=1 causes a state-history rebase
+          // that disrupts alignment progress.  The DLL handles WarpState 1→2
+          // entirely on its own after the initial WarpTo prepare dispatch.
           if (pilotCanReceivePreWarpRebaseline) {
-            const preWarpSyncStamp = toInt(pendingWarp.preWarpSyncStamp, 0);
-            if (preWarpSyncStamp <= 0) {
-              pendingWarp.preWarpSyncStamp = currentStamp;
-              sessionOnlyPreEffectUpdates.push({
-                session: entity.session,
-                updates: buildPilotPreWarpRebaselineUpdates(
-                  entity,
-                  pendingWarp,
-                  currentStamp,
-                ),
-              });
-              persistShipEntity(entity);
-              logMovementDebug("warp.pre_sync", entity, {
-                pendingWarpState,
-                preWarpSyncStamp: currentStamp,
-                pendingWarp: summarizePendingWarp(pendingWarp),
-              });
-              logWarpDebug("warp.pre_sync", entity, {
-                pendingWarpState,
-                pilotPlan: {
-                  preWarpAddBall: true,
-                  preWarpSyncStamp: currentStamp,
-                  subwarpMaxSpeedMs: roundNumber(entity.maxVelocity, 3),
-                  subwarpMaxSpeedAU: roundNumber(
-                    entity.maxVelocity / ONE_AU_IN_METERS,
-                    9,
-                  ),
-                  velocityMs: roundNumber(magnitude(entity.velocity), 3),
-                  speedFraction: roundNumber(entity.speedFraction, 3),
-                  actualSpeedFraction: roundNumber(
-                    getActualSpeedFraction(entity),
-                    3,
-                  ),
-                },
-              });
-              continue;
-            }
-            if (currentStamp <= preWarpSyncStamp) {
-              continue;
-            }
+            pendingWarp.preWarpSyncStamp = currentStamp;
           }
           logBallDebug("warp.pre_start.ego", entity, {
             pendingWarp: summarizePendingWarp(pendingWarp),
@@ -4928,35 +5070,13 @@ class SolarSystemScene {
             const warpStartUpdates = [
               buildWarpStartEffectUpdate(entity, warpStartStamp),
             ];
-            const pilotWarpStartUpdates = buildPilotWarpActivationUpdates(
-              entity,
-              warpStartStamp,
-              warpState,
-            );
             if (entity.session && isReadyForDestiny(entity.session)) {
-              if (pilotCanReceiveWarpEgoStateRefresh) {
-                sessionOnlyPreEffectUpdates.push({
-                  session: entity.session,
-                  updates: buildPilotWarpEgoStateRefreshUpdates(
-                    this.system,
-                    entity,
-                    warpStartStamp,
-                  ),
-                  splitUpdates: true,
-                });
-              }
-              sessionOnlyPreEffectUpdates.push({
-                session: entity.session,
-                updates: buildPilotWarpActivationStateRefreshUpdates(
-                  entity,
-                  warpStartStamp,
-                ),
-                splitUpdates: true,
-              });
-              sessionOnlyPreEffectUpdates.push({
-                session: entity.session,
-                updates: pilotWarpStartUpdates,
-              });
+              // Do NOT send any DoDestinyUpdate to the pilot between the
+              // WarpTo prepare dispatch and warp completion.  ANY server update
+              // during WarpState=1 causes a state-history rebase that disrupts
+              // alignment progress (the "establishing warp vector" bar drops).
+              // The DLL handles WarpState 1→2 entirely on its own.
+              // Watchers still get OnSpecialFX so they see the warp effect.
               watcherOnlyUpdates.push({
                 excludedSession: entity.session,
                 updates: warpStartUpdates,
@@ -4979,7 +5099,7 @@ class SolarSystemScene {
             const officialProfile = buildOfficialWarpReferenceProfile(
               warpState.totalDistance,
               Math.max(
-                toFiniteNumber(warpState.warpSpeed, 0) / 10,
+                toFiniteNumber(warpState.warpSpeed, 0) / 1000,
                 toFiniteNumber(warpState.cruiseWarpSpeedMs, 0) / ONE_AU_IN_METERS,
               ),
               entity.maxVelocity,
@@ -5342,7 +5462,7 @@ class SolarSystemScene {
           officialProfile: buildOfficialWarpReferenceProfile(
             result.completedWarpState.totalDistance,
             Math.max(
-              toFiniteNumber(result.completedWarpState.warpSpeed, 0) / 10,
+              toFiniteNumber(result.completedWarpState.warpSpeed, 0) / 1000,
               toFiniteNumber(result.completedWarpState.cruiseWarpSpeedMs, 0) /
                 ONE_AU_IN_METERS,
             ),
@@ -5353,7 +5473,7 @@ class SolarSystemScene {
             buildOfficialWarpReferenceProfile(
               result.completedWarpState.totalDistance,
               Math.max(
-                toFiniteNumber(result.completedWarpState.warpSpeed, 0) / 10,
+                toFiniteNumber(result.completedWarpState.warpSpeed, 0) / 1000,
                 toFiniteNumber(result.completedWarpState.cruiseWarpSpeedMs, 0) /
                   ONE_AU_IN_METERS,
               ),
@@ -5820,6 +5940,85 @@ class SpaceRuntime {
         guid: String(guid || ""),
         shipID,
         stamp,
+      },
+    };
+  }
+
+  startStargateJump(session, sourceGateID, options = {}) {
+    if (!session || !session._space) {
+      return {
+        success: false,
+        errorMsg: "NOT_IN_SPACE",
+      };
+    }
+
+    const scene = this.getSceneForSession(session);
+    if (!scene) {
+      return {
+        success: false,
+        errorMsg: "SCENE_NOT_FOUND",
+      };
+    }
+
+    const shipEntity = scene.getShipEntityForSession(session);
+    if (!shipEntity) {
+      return {
+        success: false,
+        errorMsg: "SHIP_NOT_FOUND",
+      };
+    }
+
+    const sourceGateEntity = scene.getEntityByID(sourceGateID);
+    if (!sourceGateEntity || sourceGateEntity.kind !== "stargate") {
+      return {
+        success: false,
+        errorMsg: "STARGATE_NOT_FOUND",
+      };
+    }
+
+    if (
+      options.freezeMotion !== false &&
+      (
+        shipEntity.mode !== "STOP" ||
+        shipEntity.speedFraction > 0 ||
+        magnitude(shipEntity.velocity) > 0.5
+      )
+    ) {
+      resetEntityMotion(shipEntity);
+      persistShipEntity(shipEntity);
+    }
+
+    const fxOptions = {
+      ...(options.fxOptions || {}),
+    };
+    if (
+      !Object.prototype.hasOwnProperty.call(fxOptions, "graphicInfo") &&
+      Number(sourceGateEntity.destinationSolarSystemID || 0) > 0
+    ) {
+      fxOptions.graphicInfo = [
+        Number(sourceGateEntity.destinationSolarSystemID),
+      ];
+    }
+
+    const { stamp, deliveredCount } = scene.broadcastSpecialFx(
+      shipEntity.itemID,
+      "effects.JumpOut",
+      {
+        targetID: sourceGateEntity.itemID,
+        start: true,
+        active: false,
+        ...fxOptions,
+      },
+      shipEntity,
+    );
+
+    return {
+      success: true,
+      data: {
+        shipID: shipEntity.itemID,
+        sourceGateID: sourceGateEntity.itemID,
+        stamp,
+        deliveredCount,
       },
     };
   }

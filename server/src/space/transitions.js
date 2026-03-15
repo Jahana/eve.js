@@ -1,9 +1,16 @@
 const path = require("path");
 
 const log = require(path.join(__dirname, "../utils/logger"));
-const sessionRegistry = require(
-  path.join(__dirname, "../services/chat/sessionRegistry"),
-);
+const sessionRegistry = require(path.join(
+  __dirname,
+  "../services/chat/sessionRegistry",
+));
+const {
+  flushPendingCommandSessionEffects,
+} = require(path.join(
+  __dirname,
+  "../services/chat/commandSessionEffects",
+));
 const {
   applyCharacterToSession,
   getCharacterRecord,
@@ -11,15 +18,18 @@ const {
   updateCharacterRecord,
   syncInventoryItemForSession,
 } = require(path.join(__dirname, "../services/character/characterState"));
-const { moveShipToSpace, dockShipToStation } = require(
-  path.join(__dirname, "../services/inventory/itemStore"),
-);
-const { currentFileTime } = require(
-  path.join(__dirname, "../services/_shared/serviceHelpers"),
-);
+const {
+  moveShipToSpace,
+  dockShipToStation,
+} = require(path.join(__dirname, "../services/inventory/itemStore"));
+const {
+  currentFileTime,
+} = require(path.join(__dirname, "../services/_shared/serviceHelpers"));
 const worldData = require(path.join(__dirname, "./worldData"));
 const spaceRuntime = require(path.join(__dirname, "./runtime"));
 const TRANSITION_GUARD_WINDOW_MS = 5000;
+const STARGATE_JUMP_HANDOFF_DELAY_MS = 1250;
+const STARGATE_JUMP_RANGE_METERS = 2500;
 
 function buildBoundResult(session) {
   if (!session) {
@@ -28,8 +38,7 @@ function buildBoundResult(session) {
 
   const preferredBoundId =
     session.currentBoundObjectID ||
-    (session._boundObjectIDs &&
-      (session._boundObjectIDs.ship || session._boundObjectIDs.beyonce)) ||
+    (session._boundObjectIDs && (session._boundObjectIDs.ship || session._boundObjectIDs.beyonce)) ||
     session.lastBoundObjectID ||
     null;
   if (!preferredBoundId) {
@@ -40,10 +49,7 @@ function buildBoundResult(session) {
 }
 
 function buildLocationIdentityPatch(record, solarSystemID, extra = {}) {
-  const targetSolarSystemID =
-    Number(solarSystemID || 0) ||
-    Number(record.solarSystemID || 30000142) ||
-    30000142;
+  const targetSolarSystemID = Number(solarSystemID || 0) || Number(record.solarSystemID || 30000142) || 30000142;
   const system = worldData.getSolarSystemByID(targetSolarSystemID);
 
   return {
@@ -51,11 +57,11 @@ function buildLocationIdentityPatch(record, solarSystemID, extra = {}) {
     ...extra,
     solarSystemID: targetSolarSystemID,
     constellationID:
-      Number(
-        (system && system.constellationID) || record.constellationID || 0,
-      ) || 20000020,
+      Number((system && system.constellationID) || record.constellationID || 0) ||
+      20000020,
     regionID:
-      Number((system && system.regionID) || record.regionID || 0) || 10000002,
+      Number((system && system.regionID) || record.regionID || 0) ||
+      10000002,
     worldSpaceID: 0,
   };
 }
@@ -70,7 +76,7 @@ function beginTransition(session, kind, targetID = 0) {
   if (
     activeTransition &&
     activeTransition.kind === kind &&
-    now - Number(activeTransition.startedAt || 0) < TRANSITION_GUARD_WINDOW_MS
+    (now - Number(activeTransition.startedAt || 0)) < TRANSITION_GUARD_WINDOW_MS
   ) {
     return false;
   }
@@ -99,7 +105,10 @@ function toFiniteNumber(value, fallback = 0) {
 }
 
 function cloneVector(source = null, fallback = { x: 0, y: 0, z: 0 }) {
-  const vectorSource = source && typeof source === "object" ? source : null;
+  const vectorSource =
+    source && typeof source === "object"
+      ? source
+      : null;
   return {
     x: toFiniteNumber(vectorSource ? vectorSource.x : undefined, fallback.x),
     y: toFiniteNumber(vectorSource ? vectorSource.y : undefined, fallback.y),
@@ -132,7 +141,7 @@ function scaleVector(vector, scalar) {
 }
 
 function normalizeVector(vector, fallback = { x: 1, y: 0, z: 0 }) {
-  const length = Math.sqrt(vector.x ** 2 + vector.y ** 2 + vector.z ** 2);
+  const length = Math.sqrt((vector.x ** 2) + (vector.y ** 2) + (vector.z ** 2));
   if (!Number.isFinite(length) || length <= 0) {
     return cloneVector(fallback);
   }
@@ -142,21 +151,66 @@ function normalizeVector(vector, fallback = { x: 1, y: 0, z: 0 }) {
 
 function distance(left, right) {
   const delta = subtractVectors(left, right);
-  return Math.sqrt(delta.x ** 2 + delta.y ** 2 + delta.z ** 2);
+  return Math.sqrt((delta.x ** 2) + (delta.y ** 2) + (delta.z ** 2));
 }
 
 function magnitude(vector) {
-  return Math.sqrt(vector.x ** 2 + vector.y ** 2 + vector.z ** 2);
+  return Math.sqrt((vector.x ** 2) + (vector.y ** 2) + (vector.z ** 2));
+}
+
+function buildSharedWorldPosition(systemPosition, localPosition) {
+  return {
+    x: toFiniteNumber(systemPosition && systemPosition.x, 0) -
+      toFiniteNumber(localPosition && localPosition.x, 0),
+    y: toFiniteNumber(systemPosition && systemPosition.y, 0) +
+      toFiniteNumber(localPosition && localPosition.y, 0),
+    z: toFiniteNumber(systemPosition && systemPosition.z, 0) +
+      toFiniteNumber(localPosition && localPosition.z, 0),
+  };
+}
+
+function getDirectionFromDunRotation(dunRotation) {
+  if (!Array.isArray(dunRotation) || dunRotation.length < 2) {
+    return null;
+  }
+
+  const yaw = toFiniteNumber(dunRotation[0], 0) * (Math.PI / 180);
+  const pitch = toFiniteNumber(dunRotation[1], 0) * (Math.PI / 180);
+  return normalizeVector({
+    x: Math.sin(yaw) * Math.cos(pitch),
+    y: -Math.sin(pitch),
+    z: Math.cos(yaw) * Math.cos(pitch),
+  });
+}
+
+function getDerivedStargateForwardDirection(stargate) {
+  const sourceSystem = worldData.getSolarSystemByID(stargate && stargate.solarSystemID);
+  const destinationGate = worldData.getStargateByID(stargate && stargate.destinationID);
+  const destinationSystem = worldData.getSolarSystemByID(
+    stargate && stargate.destinationSolarSystemID,
+  );
+  if (!sourceSystem || !destinationGate || !destinationSystem) {
+    return null;
+  }
+
+  return normalizeVector(
+    subtractVectors(
+      buildSharedWorldPosition(destinationSystem.position, destinationGate.position),
+      buildSharedWorldPosition(sourceSystem.position, stargate.position),
+    ),
+  );
+}
+
+function getResolvedStargateForwardDirection(stargate) {
+  return (
+    getDirectionFromDunRotation(stargate && stargate.dunRotation) ||
+    getDerivedStargateForwardDirection(stargate) ||
+    normalizeVector(cloneVector(stargate && stargate.position), { x: 1, y: 0, z: 0 })
+  );
 }
 
 function buildGateSpawnState(stargate) {
-  const system = worldData.getSolarSystemByID(stargate.solarSystemID);
-  const direction = normalizeVector(
-    subtractVectors(
-      cloneVector(stargate.position),
-      cloneVector(system && system.position),
-    ),
-  );
+  const direction = getResolvedStargateForwardDirection(stargate);
   const offset = Math.max((stargate.radius || 15000) * 0.4, 5000);
 
   return {
@@ -169,11 +223,10 @@ function buildGateSpawnState(stargate) {
 }
 
 function buildOffsetSpawnState(anchor, options = {}) {
-  const fallbackDirection = cloneVector(options.fallbackDirection, {
-    x: 1,
-    y: 0,
-    z: 0,
-  });
+  const fallbackDirection = cloneVector(
+    options.fallbackDirection,
+    { x: 1, y: 0, z: 0 },
+  );
   const anchorPosition = cloneVector(anchor && anchor.position);
   const direction = normalizeVector(
     magnitude(anchorPosition) > 0 ? anchorPosition : fallbackDirection,
@@ -181,10 +234,7 @@ function buildOffsetSpawnState(anchor, options = {}) {
   );
   const minOffset = Math.max(toFiniteNumber(options.minOffset, 0), 0);
   const clearance = Math.max(toFiniteNumber(options.clearance, 0), 0);
-  const offset = Math.max(
-    toFiniteNumber(anchor && anchor.radius, 0) + clearance,
-    minOffset,
-  );
+  const offset = Math.max(toFiniteNumber(anchor && anchor.radius, 0) + clearance, minOffset);
   const position = addVectors(anchorPosition, scaleVector(direction, offset));
 
   return {
@@ -239,8 +289,9 @@ function buildSolarSystemSpawnState(solarSystemID) {
       anchorName: celestial.itemName || `Celestial ${celestial.itemID}`,
       ...buildOffsetSpawnState(celestial, {
         minOffset: 100000,
-        clearance:
-          celestial.kind === "sun" || celestial.groupID === 6 ? 250000 : 25000,
+        clearance: celestial.kind === "sun" || celestial.groupID === 6
+          ? 250000
+          : 25000,
       }),
     };
   }
@@ -259,14 +310,12 @@ function broadcastOnCharNoLongerInStation(session, stationID) {
     return;
   }
 
-  const payload = [
-    [
-      session.characterID || 0,
-      session.corporationID || 0,
-      session.allianceID || 0,
-      session.warFactionID || 0,
-    ],
-  ];
+  const payload = [[
+    session.characterID || 0,
+    session.corporationID || 0,
+    session.allianceID || 0,
+    session.warFactionID || 0,
+  ]];
 
   for (const guest of sessionRegistry.getSessions()) {
     if (guest === session) {
@@ -287,7 +336,10 @@ function queuePendingSessionEffects(session, options = {}) {
     return;
   }
 
-  if (options.forceInitialBallpark || options.awaitBeyonceBoundBallpark) {
+  if (
+    options.forceInitialBallpark ||
+    options.awaitBeyonceBoundBallpark
+  ) {
     session._pendingCommandInitialBallpark = {
       force: options.forceInitialBallpark === true,
       awaitBeyonceBound: options.awaitBeyonceBoundBallpark === true,
@@ -299,6 +351,133 @@ function queuePendingSessionEffects(session, options = {}) {
       previousChannelID: Number(options.previousLocalChannelID || 0) || 0,
     };
   }
+}
+
+function getSurfaceDistanceBetweenEntities(entity, targetEntity) {
+  const centerDistance = distance(entity.position, targetEntity.position);
+  return Math.max(
+    0,
+    centerDistance -
+      Math.max(0, toFiniteNumber(entity && entity.radius, 0)) -
+      Math.max(0, toFiniteNumber(targetEntity && targetEntity.radius, 0)),
+  );
+}
+
+function completeStargateJump(
+  session,
+  sourceGate,
+  destinationGate,
+  activeShip,
+) {
+  if (
+    !session ||
+    !session.characterID ||
+    !sourceGate ||
+    !destinationGate ||
+    !activeShip
+  ) {
+    endTransition(session, "stargate-jump");
+    return {
+      success: false,
+      errorMsg: "INVALID_STARGATE_JUMP_STATE",
+    };
+  }
+
+  if (
+    !session._transitionState ||
+    session._transitionState.kind !== "stargate-jump"
+  ) {
+    return {
+      success: false,
+      errorMsg: "STARGATE_JUMP_CANCELLED",
+    };
+  }
+
+  const spawnState = buildGateSpawnState(destinationGate);
+
+  spaceRuntime.detachSession(session, { broadcast: true });
+
+  const moveResult = moveShipToSpace(activeShip.itemID, destinationGate.solarSystemID, {
+    position: spawnState.position,
+    direction: spawnState.direction,
+    velocity: { x: 0, y: 0, z: 0 },
+    speedFraction: 0,
+    mode: "STOP",
+    targetPoint: spawnState.position,
+  });
+  if (!moveResult.success) {
+    endTransition(session, "stargate-jump");
+    return moveResult;
+  }
+
+  syncInventoryItemForSession(
+    session,
+    moveResult.data,
+    {
+      locationID: moveResult.previousData.locationID,
+      flagID: moveResult.previousData.flagID,
+      quantity: moveResult.previousData.quantity,
+      singleton: moveResult.previousData.singleton,
+      stacksize: moveResult.previousData.stacksize,
+    },
+    {
+      emitCfgLocation: false,
+    },
+  );
+
+  const updateResult = updateCharacterRecord(session.characterID, (record) =>
+    buildLocationIdentityPatch(record, destinationGate.solarSystemID, {
+      stationID: null,
+    }),
+  );
+  if (!updateResult.success) {
+    endTransition(session, "stargate-jump");
+    return updateResult;
+  }
+
+  const previousLocalChannelID = Number(
+    session.solarsystemid2 ||
+    session.solarsystemid ||
+    session.stationid ||
+    session.stationID ||
+    0,
+  ) || 0;
+
+  const applyResult = applyCharacterToSession(session, session.characterID, {
+    emitNotifications: true,
+    logSelection: true,
+    selectionEvent: false,
+  });
+  if (!applyResult.success) {
+    endTransition(session, "stargate-jump");
+    return applyResult;
+  }
+
+  spaceRuntime.attachSession(session, moveResult.data, {
+    systemID: destinationGate.solarSystemID,
+    beyonceBound: false,
+    pendingUndockMovement: false,
+    broadcast: true,
+  });
+  queuePendingSessionEffects(session, {
+    awaitBeyonceBoundBallpark: true,
+    previousLocalChannelID,
+  });
+  flushPendingCommandSessionEffects(session);
+
+  log.info(
+    `[SpaceTransition] Stargate jump ${session.characterName || session.characterID} ship=${activeShip.itemID} from=${sourceGate.itemID} to=${destinationGate.itemID}`,
+  );
+
+  endTransition(session, "stargate-jump");
+  return {
+    success: true,
+    data: {
+      stargate: destinationGate,
+      spawnState,
+      boundResult: buildBoundResult(session),
+    },
+  };
 }
 
 function syncDockedShipTransitionForSession(session, dockResult, options = {}) {
@@ -387,18 +566,14 @@ function undockSession(session) {
   try {
     const undockState = spaceRuntime.getStationUndockSpawnState(station);
 
-    const moveResult = moveShipToSpace(
-      activeShip.itemID,
-      station.solarSystemID,
-      {
-        position: undockState.position,
-        direction: undockState.direction,
-        velocity: { x: 0, y: 0, z: 0 },
-        speedFraction: 0,
-        mode: "STOP",
-        targetPoint: undockState.position,
-      },
-    );
+    const moveResult = moveShipToSpace(activeShip.itemID, station.solarSystemID, {
+      position: undockState.position,
+      direction: undockState.direction,
+      velocity: { x: 0, y: 0, z: 0 },
+      speedFraction: 0,
+      mode: "STOP",
+      targetPoint: undockState.position,
+    });
     if (!moveResult.success) {
       return moveResult;
     }
@@ -423,13 +598,11 @@ function undockSession(session) {
     const updateResult = updateCharacterRecord(session.characterID, (record) =>
       buildLocationIdentityPatch(record, station.solarSystemID, {
         homeStationID:
-          Number(
-            record.homeStationID || record.cloneStationID || station.stationID,
-          ) || station.stationID,
+          Number(record.homeStationID || record.cloneStationID || station.stationID) ||
+          station.stationID,
         cloneStationID:
-          Number(
-            record.cloneStationID || record.homeStationID || station.stationID,
-          ) || station.stationID,
+          Number(record.cloneStationID || record.homeStationID || station.stationID) ||
+          station.stationID,
         stationID: null,
       }),
     );
@@ -523,13 +696,11 @@ function dockSession(session, stationID) {
     const updateResult = updateCharacterRecord(session.characterID, (record) =>
       buildLocationIdentityPatch(record, station.solarSystemID, {
         homeStationID:
-          Number(
-            record.homeStationID || record.cloneStationID || station.stationID,
-          ) || station.stationID,
+          Number(record.homeStationID || record.cloneStationID || station.stationID) ||
+          station.stationID,
         cloneStationID:
-          Number(
-            record.cloneStationID || record.homeStationID || station.stationID,
-          ) || station.stationID,
+          Number(record.cloneStationID || record.homeStationID || station.stationID) ||
+          station.stationID,
         stationID: station.stationID,
       }),
     );
@@ -566,12 +737,7 @@ function dockSession(session, stationID) {
 }
 
 function restoreSpaceSession(session) {
-  if (
-    !session ||
-    !session.characterID ||
-    session.stationid ||
-    session.stationID
-  ) {
+  if (!session || !session.characterID || session.stationid || session.stationID) {
     return false;
   }
 
@@ -601,18 +767,43 @@ function jumpSessionViaStargate(session, fromStargateID, toStargateID) {
   }
 
   const sourceGate = worldData.getStargateByID(fromStargateID);
-  const destinationGate =
-    worldData.getStargateByID(toStargateID) ||
-    worldData.getStargateByID(sourceGate && sourceGate.destinationID);
+  const destinationGate = worldData.getStargateByID(
+    toStargateID || (sourceGate && sourceGate.destinationID),
+  );
   if (!sourceGate || !destinationGate) {
     return {
       success: false,
       errorMsg: "STARGATE_NOT_FOUND",
     };
   }
+  if (!beginTransition(session, "stargate-jump", sourceGate.itemID)) {
+    return {
+      success: false,
+      errorMsg: "STARGATE_JUMP_IN_PROGRESS",
+    };
+  }
+  if (
+    Number(sourceGate.destinationID || 0) !== Number(destinationGate.itemID || 0)
+  ) {
+    endTransition(session, "stargate-jump");
+    return {
+      success: false,
+      errorMsg: "STARGATE_DESTINATION_MISMATCH",
+    };
+  }
+  if (
+    Number(sourceGate.solarSystemID || 0) !== Number(session._space.systemID || 0)
+  ) {
+    endTransition(session, "stargate-jump");
+    return {
+      success: false,
+      errorMsg: "WRONG_SOLAR_SYSTEM",
+    };
+  }
 
   const activeShip = getActiveShipRecord(session.characterID);
   if (!activeShip) {
+    endTransition(session, "stargate-jump");
     return {
       success: false,
       errorMsg: "SHIP_NOT_FOUND",
@@ -622,8 +813,9 @@ function jumpSessionViaStargate(session, fromStargateID, toStargateID) {
   const shipEntity = spaceRuntime.getEntity(session, activeShip.itemID);
   const sourceEntity = spaceRuntime.getEntity(session, sourceGate.itemID);
   if (shipEntity && sourceEntity) {
-    const jumpDistance = distance(shipEntity.position, sourceEntity.position);
-    if (jumpDistance > Math.max((sourceEntity.radius || 15000) * 2, 60000)) {
+    const jumpDistance = getSurfaceDistanceBetweenEntities(shipEntity, sourceEntity);
+    if (jumpDistance > STARGATE_JUMP_RANGE_METERS) {
+      endTransition(session, "stargate-jump");
       return {
         success: false,
         errorMsg: "TOO_FAR_FROM_STARGATE",
@@ -631,84 +823,31 @@ function jumpSessionViaStargate(session, fromStargateID, toStargateID) {
     }
   }
 
-  const spawnState = buildGateSpawnState(destinationGate);
-  spaceRuntime.detachSession(session, { broadcast: true });
-
-  const moveResult = moveShipToSpace(
-    activeShip.itemID,
-    destinationGate.solarSystemID,
-    {
-      position: spawnState.position,
-      direction: spawnState.direction,
-      velocity: { x: 0, y: 0, z: 0 },
-      speedFraction: 0,
-      mode: "STOP",
-      targetPoint: spawnState.position,
-    },
-  );
-  if (!moveResult.success) {
-    return moveResult;
+  const startResult = spaceRuntime.startStargateJump(session, sourceGate.itemID);
+  if (!startResult.success) {
+    endTransition(session, "stargate-jump");
+    return startResult;
   }
 
-  syncInventoryItemForSession(
-    session,
-    moveResult.data,
-    {
-      locationID: moveResult.previousData.locationID,
-      flagID: moveResult.previousData.flagID,
-      quantity: moveResult.previousData.quantity,
-      singleton: moveResult.previousData.singleton,
-      stacksize: moveResult.previousData.stacksize,
-    },
-    {
-      emitCfgLocation: false,
-    },
-  );
-
-  const updateResult = updateCharacterRecord(session.characterID, (record) =>
-    buildLocationIdentityPatch(record, destinationGate.solarSystemID, {
-      stationID: null,
-    }),
-  );
-  if (!updateResult.success) {
-    return updateResult;
-  }
-
-  const applyResult = applyCharacterToSession(session, session.characterID, {
-    emitNotifications: true,
-    logSelection: true,
-    selectionEvent: false,
-  });
-  if (!applyResult.success) {
-    return applyResult;
-  }
-
-  spaceRuntime.attachSession(session, moveResult.data, {
-    systemID: destinationGate.solarSystemID,
-    beyonceBound: false,
-    pendingUndockMovement: false,
-    broadcast: true,
-  });
-  queuePendingSessionEffects(session, {
-    awaitBeyonceBoundBallpark: true,
-    previousLocalChannelID:
-      Number(
-        session.solarsystemid2 ||
-          session.solarsystemid ||
-          session.stationid ||
-          session.stationID ||
-          0,
-      ) || 0,
-  });
-
-  log.info(
-    `[SpaceTransition] Stargate jump ${session.characterName || session.characterID} ship=${activeShip.itemID} from=${sourceGate.itemID} to=${destinationGate.itemID}`,
-  );
+  setTimeout(() => {
+    const completionResult = completeStargateJump(
+      session,
+      sourceGate,
+      destinationGate,
+      activeShip,
+    );
+    if (!completionResult.success) {
+      log.warn(
+        `[SpaceTransition] Delayed stargate jump failed for ${session.characterName || session.characterID}: ${completionResult.errorMsg}`,
+      );
+    }
+  }, STARGATE_JUMP_HANDOFF_DELAY_MS);
 
   return {
     success: true,
     data: {
       stargate: destinationGate,
+      jumpOutStamp: startResult.data.stamp,
       boundResult: buildBoundResult(session),
     },
   };
@@ -747,14 +886,13 @@ function jumpSessionToStation(session, stationID) {
   }
 
   try {
-    const previousLocalChannelID =
-      Number(
-        session.solarsystemid2 ||
-          session.solarsystemid ||
-          session.stationid ||
-          session.stationID ||
-          0,
-      ) || 0;
+    const previousLocalChannelID = Number(
+      session.solarsystemid2 ||
+      session.solarsystemid ||
+      session.stationid ||
+      session.stationID ||
+      0,
+    ) || 0;
 
     if (session._space) {
       spaceRuntime.detachSession(session, { broadcast: true });
@@ -768,24 +906,23 @@ function jumpSessionToStation(session, stationID) {
     const currentRecord = getCharacterRecord(session.characterID);
     const authoritativeHomeStationID =
       Number(
-        (currentRecord &&
-          (currentRecord.homeStationID || currentRecord.cloneStationID)) ||
-          session.homeStationID ||
-          session.homestationid ||
-          session.cloneStationID ||
-          session.clonestationid ||
-          0,
+        (currentRecord && (
+          currentRecord.homeStationID ||
+          currentRecord.cloneStationID
+        )) ||
+        session.homeStationID ||
+        session.homestationid ||
+        session.cloneStationID ||
+        session.clonestationid ||
+        0,
       ) || 0;
 
     const updateResult = updateCharacterRecord(session.characterID, (record) =>
       buildLocationIdentityPatch(record, station.solarSystemID, {
         homeStationID: authoritativeHomeStationID || station.stationID,
         cloneStationID:
-          Number(
-            record.cloneStationID ||
-              authoritativeHomeStationID ||
-              station.stationID,
-          ) || station.stationID,
+          Number(record.cloneStationID || authoritativeHomeStationID || station.stationID) ||
+          station.stationID,
         stationID: station.stationID,
       }),
     );
@@ -860,14 +997,13 @@ function jumpSessionToSolarSystem(session, solarSystemID) {
   try {
     const sourceStationID = Number(session.stationid || session.stationID || 0);
     const wasInSpace = Boolean(session._space);
-    const previousLocalChannelID =
-      Number(
-        session.solarsystemid2 ||
-          session.solarsystemid ||
-          session.stationid ||
-          session.stationID ||
-          0,
-      ) || 0;
+    const previousLocalChannelID = Number(
+      session.solarsystemid2 ||
+      session.solarsystemid ||
+      session.stationid ||
+      session.stationID ||
+      0,
+    ) || 0;
     const spawnState = buildSolarSystemSpawnState(targetSolarSystemID);
     if (!spawnState) {
       return {
@@ -916,17 +1052,11 @@ function jumpSessionToSolarSystem(session, solarSystemID) {
         ...(sourceStationID
           ? {
               homeStationID:
-                Number(
-                  record.homeStationID ||
-                    record.cloneStationID ||
-                    sourceStationID,
-                ) || sourceStationID,
+                Number(record.homeStationID || record.cloneStationID || sourceStationID) ||
+                sourceStationID,
               cloneStationID:
-                Number(
-                  record.cloneStationID ||
-                    record.homeStationID ||
-                    sourceStationID,
-                ) || sourceStationID,
+                Number(record.cloneStationID || record.homeStationID || sourceStationID) ||
+                sourceStationID,
             }
           : {}),
         stationID: null,
@@ -1354,4 +1484,9 @@ module.exports = {
   jumpSessionToStation,
   jumpSessionToSolarSystem,
   teleportSession,
+};
+module.exports._testing = {
+  buildGateSpawnState,
+  getResolvedStargateForwardDirection,
+  getSurfaceDistanceBetweenEntities,
 };

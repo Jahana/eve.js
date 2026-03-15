@@ -12,6 +12,9 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const worldData = require(path.join(__dirname, "../../space/worldData"));
 const {
+  buildRowset,
+} = require(path.join(__dirname, "../_shared/serviceHelpers"));
+const {
   buildStationServiceMask,
 } = require(path.join(__dirname, "../_shared/stationStaticData"));
 
@@ -52,13 +55,37 @@ class MapService extends BaseService {
     // it calls: util.Row('solarSystemID') → creates an empty Row object
     // Then: 30000142 in Row(...) → False (empty row, nothing matches)
     // So no security modifier text is applied — correct for no modified systems.
+    return buildRowset(
+      ["solarSystemID"],
+      [],
+      "eve.common.script.sys.rowset.Rowset",
+    );
+  }
+
+    Handle_GetTriglavianMinorVictorySystems(args, session, kwargs) {
+    log.debug("[MapService] GetTriglavianMinorVictorySystems called");
+
     return {
-      type: "object",
-      name: "util.KeyVal",
-      args: {
-        type: "dict",
-        entries: [["Index", { type: "token", value: "util.Row" }]],
-      },
+      type: "list",
+      items: [],
+    };
+  }
+
+  Handle_GetEdencomFortressSystems(args, session, kwargs) {
+    log.debug("[MapService] GetEdencomFortressSystems called");
+
+    return {
+      type: "list",
+      items: [],
+    };
+  }
+
+  Handle_GetEdencomMinorVictorySystems(args, session, kwargs) {
+    log.debug("[MapService] GetEdencomMinorVictorySystems called");
+
+    return {
+      type: "list",
+      items: [],
     };
   }
 

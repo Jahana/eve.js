@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "nextCustomCorporationID": 98000001,
+    "nextCustomCorporationID": 98000002,
     "npcSeedVersion": 1
   },
   "records": {
@@ -8524,6 +8524,36 @@
       "color3": null,
       "typeface": null,
       "memberCount": 1
+    },
+    "98000001": {
+      "corporationID": 98000001,
+      "corporationName": "hi",
+      "tickerName": "HI",
+      "description": "Capsuleer corporation hi.",
+      "ceoID": 140000005,
+      "creatorID": 140000005,
+      "allianceID": null,
+      "stationID": 60003760,
+      "solarSystemID": 30000140,
+      "factionID": null,
+      "raceID": null,
+      "deleted": 0,
+      "shares": 1000,
+      "taxRate": 0,
+      "loyaltyPointTaxRate": 0,
+      "friendlyFire": 0,
+      "memberLimit": -1,
+      "url": "",
+      "hasPlayerPersonnelManager": true,
+      "isNPC": false,
+      "createdAt": "134180734761090000",
+      "shape1": 419,
+      "shape2": null,
+      "shape3": null,
+      "color1": null,
+      "color2": null,
+      "color3": null,
+      "typeface": null
     }
   }
 }

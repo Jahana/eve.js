@@ -94,3 +94,58 @@
 [2026-03-15T17:14:07.971Z] SlashCmd user=2 char=140000005 command="/effect celestial_beam" args=[{"type":"wstring","value":"/effect celestial_beam"}] kwargs={"type":"dict","entries":[["machoVersion",1]]}
 [2026-03-15T17:16:15.773Z] CallReq method=SlashCmd callID=221 args=["<Buffer:/tr me 40009076>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 40009076>"],{"type":"dict","entries":[["machoVersion",1]]}]
 [2026-03-15T17:16:15.776Z] SlashCmd user=2 char=140000005 command="/tr me 40009076" args=["<Buffer:/tr me 40009076>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:15:44.648Z] CallReq method=SlashCmd callID=185 args=["<Buffer:/>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:15:44.652Z] SlashCmd user=2 char=140000005 command="/" args=["<Buffer:/>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:15:44.663Z] CallReq method=SlashCmd callID=186 args=[{"type":"wstring","value":"/corp "}] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",[{"type":"wstring","value":"/corp "}],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:15:44.665Z] SlashCmd user=2 char=140000005 command="/corp" args=[{"type":"wstring","value":"/corp "}] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:20:08.322Z] CallReq method=SlashCmd callID=205 args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 60003055>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:20:08.324Z] SlashCmd user=2 char=140000005 command="/tr me 60003055" args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:20:08.331Z] SlashCmd error user=2 char=140000005 command="/tr me 60003055" args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} error=TypeError: getTeleportSession(...) is not a function
+    at executeChatCommand (D:\PROJECTS\eve.js\server\src\services\chat\chatCommands.js:1957:40)
+    at SlashService.Handle_SlashCmd (D:\PROJECTS\eve.js\server\src\services\admin\slashService.js:182:22)
+    at SlashService.callMethod (D:\PROJECTS\eve.js\server\src\services\baseService.js:34:31)
+    at PacketDispatcher._handleCallReq (D:\PROJECTS\eve.js\server\src\network\packetDispatcher.js:204:34)
+    at PacketDispatcher.dispatch (D:\PROJECTS\eve.js\server\src\network\packetDispatcher.js:115:21)
+    at Socket.<anonymous> (D:\PROJECTS\eve.js\server\src\network\tcp\index.js:170:26)
+    at Socket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:559:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:510:3)
+    at Readable.push (node:internal/streams/readable:390:5)
+[2026-03-15T18:26:09.467Z] CallReq method=SlashCmd callID=260 args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 60003055>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:26:09.469Z] SlashCmd user=2 char=140000005 command="/tr me 60003055" args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:26:09.492Z] SlashCmd error user=2 char=140000005 command="/tr me 60003055" args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} error=ReferenceError: captureSpaceBootstrapState is not defined
+    at teleportSession (D:\PROJECTS\eve.js\server\src\space\transitions.js:1131:30)
+    at executeChatCommand (D:\PROJECTS\eve.js\server\src\services\chat\chatCommands.js:1957:40)
+    at SlashService.Handle_SlashCmd (D:\PROJECTS\eve.js\server\src\services\admin\slashService.js:182:22)
+    at SlashService.callMethod (D:\PROJECTS\eve.js\server\src\services\baseService.js:34:31)
+    at PacketDispatcher._handleCallReq (D:\PROJECTS\eve.js\server\src\network\packetDispatcher.js:204:34)
+    at PacketDispatcher.dispatch (D:\PROJECTS\eve.js\server\src\network\packetDispatcher.js:115:21)
+    at Socket.<anonymous> (D:\PROJECTS\eve.js\server\src\network\tcp\index.js:170:26)
+    at Socket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:559:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:510:3)
+[2026-03-15T18:29:58.777Z] CallReq method=SlashCmd callID=270 args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 60003055>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:29:58.778Z] SlashCmd user=2 char=140000005 command="/tr me 60003055" args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:29:58.787Z] SlashCmd error user=2 char=140000005 command="/tr me 60003055" args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} error=ReferenceError: f is not defined
+    at Object.<anonymous> (D:\PROJECTS\eve.js\server\src\space\transitions.js:1486:19)
+    at Module._compile (node:internal/modules/cjs/loader:1761:14)
+    at Object..js (node:internal/modules/cjs/loader:1893:10)
+    at Module.load (node:internal/modules/cjs/loader:1481:32)
+    at Module._load (node:internal/modules/cjs/loader:1300:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)
+    at Module.require (node:internal/modules/cjs/loader:1504:12)
+    at require (node:internal/modules/helpers:152:16)
+    at getTeleportSession (D:\PROJECTS\eve.js\server\src\services\chat\chatCommands.js:117:10)
+[2026-03-15T18:30:13.801Z] CallReq method=SlashCmd callID=272 args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",["<Buffer:/tr me 60003055>"],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:30:13.813Z] SlashCmd user=2 char=140000005 command="/tr me 60003055" args=["<Buffer:/tr me 60003055>"] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:35:53.418Z] CallReq method=SlashCmd callID=324 args=[{"type":"wstring","value":"/loadsys "}] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",[{"type":"wstring","value":"/loadsys "}],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:35:53.427Z] SlashCmd user=2 char=140000005 command="/loadsys" args=[{"type":"wstring","value":"/loadsys "}] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:37:23.482Z] CallReq method=SlashCmd callID=356 args=[{"type":"wstring","value":"/corp "}] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",[{"type":"wstring","value":"/corp "}],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:37:23.485Z] SlashCmd user=2 char=140000005 command="/corp" args=[{"type":"wstring","value":"/corp "}] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:37:28.357Z] CallReq method=SlashCmd callID=357 args=[{"type":"wstring","value":"/help "}] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",[{"type":"wstring","value":"/help "}],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:37:28.367Z] SlashCmd user=2 char=140000005 command="/help" args=[{"type":"wstring","value":"/help "}] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:37:35.930Z] CallReq method=SlashCmd callID=358 args=[{"type":"wstring","value":"/corpcreate "}] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",[{"type":"wstring","value":"/corpcreate "}],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:37:35.934Z] SlashCmd user=2 char=140000005 command="/corpcreate" args=[{"type":"wstring","value":"/corpcreate "}] kwargs={"type":"dict","entries":[["machoVersion",1]]}
+[2026-03-15T18:37:39.298Z] CallReq method=SlashCmd callID=359 args=[{"type":"wstring","value":"/corpcreate hi"}] kwargs={"type":"dict","entries":[["machoVersion",1]]} raw=[1,"<Buffer:SlashCmd>",[{"type":"wstring","value":"/corpcreate hi"}],{"type":"dict","entries":[["machoVersion",1]]}]
+[2026-03-15T18:37:39.305Z] SlashCmd user=2 char=140000005 command="/corpcreate hi" args=[{"type":"wstring","value":"/corpcreate hi"}] kwargs={"type":"dict","entries":[["machoVersion",1]]}
