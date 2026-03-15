@@ -3,6 +3,10 @@
 > [!WARNING]
 > This repo is still early-stage. The current focus is getting practical client features working, not full retail parity.
 
+
+> [!WARNING]
+> Due to github's file size limit, you will need to manually extract the .zip inside the /data folder in root dir :)
+
 ## Windows Quick Start
 
 1. Install dependencies once:
