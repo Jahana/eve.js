@@ -1,0 +1,23 @@
+# PROJECT FILES
+- refine readme.md, include links to discord users, a list of features, with checkboxes next to them which indicate wether they are implemented yet or not.
+- combine some of the scripts (such as Play.bat and PlayDebug.bat) to be one and have launch options / ask user for debug run or regular run
+- 
+
+# GAME FEATURES (needs implemented)
+- (BIG) cosmic anomolies which randomly spawn within systems
+- module grouping (e.g. group missile launchers or lasers)
+- skill queues and related logic (such as skill completion etc)
+- concord police + criminal timer and related logic
+- (50%) citadels
+  - (100%) docking, tethering, view outside
+  - (0%) standup modules and fuel
+- POS's
+- super weapons/lances
+- security status
+- security status history
+- 
+
+# GAME FEATURES (buggy / needs revisited)
+- time dialation
+- carrier fighters
+- 

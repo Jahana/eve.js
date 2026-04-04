@@ -1,0 +1,6 @@
+@echo off
+echo Welcome to EVE.js!
+echo Installing dependencies...
+cmd /c "npm i" 
+echo Starting server...
+cmd /c "cd server && set EVEJS_PROXY_LOCAL_INTERCEPT=1 && npm start"
