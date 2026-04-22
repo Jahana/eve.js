@@ -2640,7 +2640,11 @@ class InvBrokerService extends BaseService {
     for (const itemID of itemIDs) {
       const removeResult = removeInventoryItem(itemID, { removeContents: true });
       if (!removeResult.success) {
-        log.warn(`[InvBroker] TrashItems failed to remove itemID=${itemID} error=${removeResult.errorMsg}`);
+        if (removeResult.errorMsg === "ITEM_NOT_FOUND") {
+          log.debug(`[InvBroker] TrashItems skipped itemID=${itemID} (not found)`);
+        } else {
+          log.warn(`[InvBroker] TrashItems failed to remove itemID=${itemID} error=${removeResult.errorMsg}`);
+        }
         continue;
       }
 
