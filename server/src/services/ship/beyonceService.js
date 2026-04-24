@@ -8,6 +8,7 @@ const {
   buildFiletimeLong,
   extractDictEntries,
   normalizeNumber,
+  normalizeText,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 const {
   throwWrappedUserError,
@@ -23,6 +24,9 @@ const {
   getCynoJammerOnlineSimTime,
 } = require(path.join(__dirname, "../sovereignty/sovSuppressionState"));
 const fleetRuntime = require(path.join(__dirname, "../fleets/fleetRuntime"));
+const bookmarkStore = require(path.join(__dirname, "../character/bookmarkStore"));
+const sharedBookmarkStore = require(path.join(__dirname, "../character/sharedBookmarkStore"));
+const bookmarkNotifications = require(path.join(__dirname, "../character/bookmarkNotifications"));
 const bookmarkRuntime = require(path.join(__dirname, "../bookmark/bookmarkRuntimeState"));
 const {
   resolveLocationBookmarkTarget,
@@ -30,7 +34,6 @@ const {
 const {
   TYPE_SOLAR_SYSTEM,
 } = require(path.join(__dirname, "../bookmark/bookmarkConstants"));
-const bookmarkNotifications = require(path.join(__dirname, "../bookmark/bookmarkNotifications"));
 const signatureRuntime = require(path.join(
   __dirname,
   "../exploration/signatures/signatureRuntime",
@@ -39,6 +42,12 @@ const USER_ERROR_LOCALIZATION_LABEL = 101;
 const STARGATE_CLOSED_LABEL = "UI/GateIcons/GateClosed";
 const STARGATE_TOO_FAR_LABEL = "UI/Menusvc/MenuHints/NotWithingMaxJumpDist";
 const CRIMEWATCH_WARP_BLOCKED_MESSAGE = "Warp is disabled while the criminal timer is active.";
+const SHARED_BOOKMARK_DELAY_MS = 2 * 60 * 1000;
+const BOOKMARK_EXPIRY_MS = {
+  1: 4 * 60 * 60 * 1000,
+  2: 2 * 24 * 60 * 60 * 1000,
+  3: 24 * 60 * 60 * 1000,
+};
 
 function getKwargValue(kwargs, key) {
   const entries = extractDictEntries(kwargs);
@@ -61,6 +70,105 @@ function buildBookmarkReplyTuple(bookmark = {}) {
     normalizeNumber(bookmark.locationID, 0),
     bookmark.expiry ? buildFiletimeLong(bookmark.expiry) : null,
   ];
+}
+
+function wrapBookmarkReplyTuple(tuple) {
+  if (!Array.isArray(tuple)) {
+    return tuple;
+  }
+  if (tuple[7] != null) {
+    tuple[7] = buildFiletimeLong(tuple[7]);
+  }
+  return tuple;
+}
+
+function translateBookmarkExpiryMode(expiryMode) {
+  const offsetMs = BOOKMARK_EXPIRY_MS[normalizeNumber(expiryMode, 0)] || null;
+  return offsetMs === null ? null : Date.now() + offsetMs;
+}
+
+function filetimeToMs(filetimeStr) {
+  if (filetimeStr == null) {
+    return 0;
+  }
+  try {
+    const EVE_EPOCH_OFFSET_MS = 11644473600000n;
+    return Number(BigInt(filetimeStr) / 10000n - EVE_EPOCH_OFFSET_MS);
+  } catch (_) {
+    return 0;
+  }
+}
+
+function isBookmarkDelayed(bookmark, charID) {
+  if (!bookmark || !bookmark.creatorID) {
+    return false;
+  }
+  if (Number(bookmark.creatorID) === Number(charID)) {
+    return false;
+  }
+
+  const createdMs = filetimeToMs(bookmark.created);
+  if (createdMs <= 0) {
+    return false;
+  }
+
+  return Date.now() - createdMs < SHARED_BOOKMARK_DELAY_MS;
+}
+
+function resolveBookmarkAnyStore(session, bookmarkID) {
+  const charID = session && session.characterID;
+  const personalBookmark = bookmarkStore.getBookmarkByID(charID, bookmarkID);
+  if (personalBookmark) {
+    return personalBookmark;
+  }
+
+  const knownSharedFolders = bookmarkStore.getKnownSharedFolders(charID);
+  for (const knownFolder of knownSharedFolders) {
+    if (!knownFolder || !knownFolder.isActive) {
+      continue;
+    }
+    const bookmarks = sharedBookmarkStore.getBookmarksInFolder(knownFolder.folderID);
+    const match = bookmarks.find((bookmark) => Number(bookmark.bookmarkID) === Number(bookmarkID));
+    if (!match) {
+      continue;
+    }
+    if (isBookmarkDelayed(match, charID)) {
+      log.info(
+        `[Beyonce] Bookmark ${bookmarkID} is still in the shared delay window for char=${charID}`,
+      );
+      return null;
+    }
+    return match;
+  }
+
+  return null;
+}
+
+function resolveBookmarkAlignTarget(session, bookmarkID) {
+  const bookmark = resolveBookmarkAnyStore(session, bookmarkID);
+  return normalizeNumber(bookmark && bookmark.itemID, 0);
+}
+
+function addBookmarkToFolder(charID, folderID, bookmarkOpts) {
+  let replyTuple = null;
+
+  if (sharedBookmarkStore.isSharedFolderID(folderID)) {
+    replyTuple = sharedBookmarkStore.addBookmarkToSharedFolder(folderID, bookmarkOpts);
+    if (replyTuple) {
+      const bookmarks = sharedBookmarkStore.getBookmarksInFolder(folderID);
+      const newBookmark = bookmarks.find(
+        (bookmark) => Number(bookmark.bookmarkID) === Number(replyTuple[0]),
+      );
+      if (newBookmark) {
+        const update = bookmarkNotifications.buildBookmarksAddedUpdate(folderID, [newBookmark]);
+        bookmarkNotifications.broadcastFolderUpdate(folderID, [update], charID);
+      }
+    }
+  } else {
+    replyTuple = bookmarkStore.addBookmark(charID, bookmarkOpts);
+  }
+
+  return wrapBookmarkReplyTuple(replyTuple);
 }
 
 function resolveBookmarkTargetForSession(session, bookmarkID, options = {}) {
@@ -413,44 +521,76 @@ class BeyonceService extends BaseService {
 
   Handle_CmdGotoBookmark(args, session) {
     const bookmarkID = normalizeNumber(args && args[0], 0);
-    const target = resolveBookmarkTargetForSession(session, bookmarkID);
+    const bookmark = resolveBookmarkAnyStore(session, bookmarkID);
     log.info(
-      `[Beyonce] CmdGotoBookmark char=${session && session.characterID} bookmark=${bookmarkID} target=${target && target.kind}`,
+      `[Beyonce] CmdGotoBookmark char=${session && session.characterID} bookmark=${bookmarkID}`,
     );
-    if (!target) {
+    if (!bookmark) {
       throwWrappedUserError("BookmarkNotAvailable");
     }
 
-    if (target.kind === "item") {
-      spaceRuntime.followBall(session, target.itemID, 0);
+    const targetID = normalizeNumber(bookmark.itemID, 0);
+    if (targetID > 0) {
+      const scene = spaceRuntime.getSceneForSession(session);
+      const entity =
+        scene && typeof scene.getEntityByID === "function"
+          ? scene.getEntityByID(targetID)
+          : null;
+      if (entity) {
+        spaceRuntime.followBall(session, targetID, 0);
+        return null;
+      }
+    }
+
+    const point = {
+      x: normalizeNumber(bookmark.x, 0),
+      y: normalizeNumber(bookmark.y, 0),
+      z: normalizeNumber(bookmark.z, 0),
+    };
+    if (point.x !== 0 || point.y !== 0 || point.z !== 0) {
+      spaceRuntime.gotoPoint(session, point, {
+        commandSource: "CmdGotoBookmark",
+      });
       return null;
     }
 
-    spaceRuntime.gotoPoint(session, target.point, {
-      commandSource: "CmdGotoBookmark",
-    });
-    return null;
+    throwWrappedUserError("BookmarkNotAvailable");
   }
 
   Handle_CmdAlignTo(args, session, kwargs) {
     const positionalTargetID = normalizeNumber(args && args[0], 0);
     const kwargTargetID = normalizeNumber(getKwargValue(kwargs, "dstID"), 0);
     const bookmarkID = normalizeNumber(getKwargValue(kwargs, "bookmarkID"), 0);
-    const bookmarkTarget =
-      bookmarkID > 0 ? resolveBookmarkTargetForSession(session, bookmarkID) : null;
     const targetID =
       positionalTargetID ||
       kwargTargetID ||
-      normalizeNumber(bookmarkTarget && bookmarkTarget.itemID, 0);
+      resolveBookmarkAlignTarget(session, bookmarkID);
     log.info(
       `[Beyonce] CmdAlignTo char=${session && session.characterID} target=${targetID} bookmark=${bookmarkID}`,
     );
-    if (bookmarkTarget && bookmarkTarget.kind === "point") {
-      spaceRuntime.gotoPoint(session, bookmarkTarget.point, {
-        commandSource: "CmdAlignToBookmark",
-      });
+
+    if (targetID > 0) {
+      spaceRuntime.alignTo(session, targetID);
       return null;
     }
+
+    if (bookmarkID > 0) {
+      const bookmark = resolveBookmarkAnyStore(session, bookmarkID);
+      if (bookmark) {
+        const point = {
+          x: normalizeNumber(bookmark.x, 0),
+          y: normalizeNumber(bookmark.y, 0),
+          z: normalizeNumber(bookmark.z, 0),
+        };
+        if (point.x !== 0 || point.y !== 0 || point.z !== 0) {
+          spaceRuntime.gotoPoint(session, point, {
+            commandSource: "CmdAlignToBookmark",
+          });
+          return null;
+        }
+      }
+    }
+
     spaceRuntime.alignTo(session, targetID);
     return null;
   }
@@ -566,37 +706,38 @@ class BeyonceService extends BaseService {
       }
       result = spaceRuntime.warpToEntity(session, numericTarget, { minimumRange });
     } else if (warpType === "bookmark" && numericTarget > 0) {
-      const bookmarkTarget = resolveBookmarkTargetForSession(session, numericTarget);
-      if (!bookmarkTarget) {
+      const bookmark = resolveBookmarkAnyStore(session, numericTarget);
+      if (!bookmark) {
         throwWrappedUserError("BookmarkNotAvailable");
       }
-      maybeMaterializeMissionBookmarkTarget(session, bookmarkTarget);
-      result =
-        bookmarkTarget.kind === "item"
-          ? (() => {
-              const scene = spaceRuntime.getSceneForSession(session);
-              const entity =
-                scene && typeof scene.getEntityByID === "function"
-                  ? scene.getEntityByID(normalizeNumber(bookmarkTarget.itemID, 0))
-                  : null;
-              if (
-                entity &&
-                (
-                  entity.signalTrackerUniverseSeededSite === true ||
-                  String(entity.kind || "").trim() === "missionSite"
-                )
-              ) {
-                ensureUniverseSiteContentsMaterialized(scene, {
-                  siteID: normalizeNumber(bookmarkTarget.itemID, 0),
-                }, {
-                  spawnEncounters: true,
-                  broadcast: true,
-                  session,
-                });
-              }
-              return spaceRuntime.warpToEntity(session, bookmarkTarget.itemID, { minimumRange });
-            })()
-          : spaceRuntime.warpToPoint(session, bookmarkTarget.point, { minimumRange });
+
+      const bookmarkItemID = normalizeNumber(bookmark.itemID, 0);
+      if (bookmarkItemID > 0) {
+        result = spaceRuntime.warpToEntity(session, bookmarkItemID, { minimumRange });
+        if ((!result || !result.success) &&
+          (
+            normalizeNumber(bookmark.x, 0) !== 0 ||
+            normalizeNumber(bookmark.y, 0) !== 0 ||
+            normalizeNumber(bookmark.z, 0) !== 0
+          )
+        ) {
+          result = spaceRuntime.warpToPoint(session, {
+            x: normalizeNumber(bookmark.x, 0),
+            y: normalizeNumber(bookmark.y, 0),
+            z: normalizeNumber(bookmark.z, 0),
+          }, {
+            minimumRange,
+          });
+        }
+      } else {
+        result = spaceRuntime.warpToPoint(session, {
+          x: normalizeNumber(bookmark.x, 0),
+          y: normalizeNumber(bookmark.y, 0),
+          z: normalizeNumber(bookmark.z, 0),
+        }, {
+          minimumRange,
+        });
+      }
     } else if (
       rawTarget &&
       typeof rawTarget === "object" &&
@@ -700,11 +841,12 @@ class BeyonceService extends BaseService {
   }
 
   Handle_BookmarkLocation(args, session, kwargs) {
+    const charID = session && session.characterID;
     const itemID = normalizeNumber(args && args[0], 0);
     const folderID = normalizeNumber(args && args[1], 0);
-    const name = args && args[2];
-    const comment = args && args[3];
-    const expiry = args && args[4];
+    const name = normalizeText(args && args[2], "");
+    const comment = normalizeText(args && args[3], "");
+    const expiryMode = normalizeNumber(args && args[4], 0);
     const subfolderID = getBookmarkSubfolderID(kwargs);
     const scene = spaceRuntime.getSceneForSession(session);
     const target = resolveLocationBookmarkTarget(itemID, session, scene);
@@ -713,48 +855,40 @@ class BeyonceService extends BaseService {
       throwWrappedUserError("BookmarkNotAvailable");
     }
 
-    const result = bookmarkRuntime.createBookmark(session && session.characterID, {
+    return addBookmarkToFolder(charID, folderID, {
       folderID,
       memo: name,
       note: comment,
-      expiryMode: expiry,
+      expiry: translateBookmarkExpiryMode(expiryMode),
       subfolderID,
+      creatorID: charID,
       ...target,
     });
-    if (result.folder && result.folder.isPersonal === false) {
-      bookmarkNotifications.notifyBookmarksAdded(result.folder.folderID, [result.bookmark], {
-        excludeCharacterID: session && session.characterID,
-      });
-    }
-    return buildBookmarkReplyTuple(result.bookmark);
   }
 
   Handle_BookmarkScanResult(args, session, kwargs) {
+    const charID = session && session.characterID;
     const locationID = normalizeNumber(args && args[0], 0);
-    const name = args && args[1];
-    const comment = args && args[2];
+    const name = normalizeText(args && args[1], "");
+    const comment = normalizeText(args && args[2], "");
     const resultID = normalizeNumber(args && args[3], 0);
     const folderID = normalizeNumber(args && args[4], 0);
-    const expiry = args && args[5];
+    const expiryMode = normalizeNumber(args && args[5], 0);
     const subfolderID = getBookmarkSubfolderID(kwargs);
     const target = bookmarkRuntime.resolveScanBookmarkTarget(locationID, resultID);
     if (!target) {
       throwWrappedUserError("BookmarkNotAvailable");
     }
-    const result = bookmarkRuntime.createBookmark(session && session.characterID, {
+
+    return addBookmarkToFolder(charID, folderID, {
       folderID,
       memo: name,
       note: comment,
-      expiryMode: expiry,
+      expiry: translateBookmarkExpiryMode(expiryMode),
       subfolderID,
+      creatorID: charID,
       ...target,
     });
-    if (result.folder && result.folder.isPersonal === false) {
-      bookmarkNotifications.notifyBookmarksAdded(result.folder.folderID, [result.bookmark], {
-        excludeCharacterID: session && session.characterID,
-      });
-    }
-    return buildBookmarkReplyTuple(result.bookmark);
   }
 
   Handle_MachoResolveObject(args, session) {
