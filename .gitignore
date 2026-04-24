@@ -2,3 +2,6 @@ node_modules
 tools/ConfigEditor/assets/
 .claude
 server/src/_secondary/image/generated/Character
+/server/logs
+server/tidi_probe.log
+/server/src/_secondary/data/chat

@@ -29,7 +29,6 @@ function buildMaps() {
   const celestialsById = new Map();
   const asteroidBeltsById = new Map();
   const stationsBySystem = new Map();
-  const celestialsById = new Map();
   const celestialsBySystem = new Map();
   const asteroidBeltsBySystem = new Map();
   const stargatesById = new Map();
