@@ -52,6 +52,7 @@ const {
   validateFitForShip,
   calculateShipDerivedAttributes,
   getShipBaseAttributeValue,
+  SLOT_FAMILY_FLAGS,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const {
   MINING_SHIP_BAY_FLAGS,
@@ -2651,6 +2652,11 @@ class InvBrokerService extends BaseService {
     let movedCount = 0;
 
     for (const fittedItem of fittedItems) {
+      if (SLOT_FAMILY_FLAGS.rig.includes(fittedItem.flagID)) {
+        log.debug(`[InvBroker] StripFitting skipping rig itemID=${fittedItem.itemID} flagID=${fittedItem.flagID} (rigs are destroyed, not moved)`);
+        continue;
+      }
+
       const moveResult = moveItemToLocation(fittedItem.itemID, shipRecord.locationID, ITEM_FLAGS.HANGAR);
       if (!moveResult.success) {
         log.warn(`[InvBroker] StripFitting failed to move itemID=${fittedItem.itemID} error=${moveResult.errorMsg}`);
