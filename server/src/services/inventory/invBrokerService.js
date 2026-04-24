@@ -2629,6 +2629,48 @@ class InvBrokerService extends BaseService {
     return this._buildInvKeyVal(session, overrides);
   }
 
+  Handle_StripFitting(args, session) {
+    this._traceInventory("StripFitting", session, { args });
+    const boundContext = this._getBoundContext(session);
+    const shipRecord = this._getShipInventoryRecord(session, boundContext);
+
+    if (!shipRecord) {
+      log.warn(`[InvBroker] StripFitting failed: could not resolve ship record from bound context`);
+      return null;
+    }
+
+    const charID = this._getCharacterId(session);
+    const fittedItems = listFittedItems(charID, shipRecord.itemID);
+    log.debug(`[InvBroker] StripFitting shipID=${shipRecord.itemID} locationID=${shipRecord.locationID} fittedCount=${fittedItems.length}`);
+
+    if (fittedItems.length === 0) {
+      return null;
+    }
+
+    const allChanges = [];
+    let movedCount = 0;
+
+    for (const fittedItem of fittedItems) {
+      const moveResult = moveItemToLocation(fittedItem.itemID, shipRecord.locationID, ITEM_FLAGS.HANGAR);
+      if (!moveResult.success) {
+        log.warn(`[InvBroker] StripFitting failed to move itemID=${fittedItem.itemID} error=${moveResult.errorMsg}`);
+        continue;
+      }
+
+      movedCount += 1;
+      allChanges.push(...((moveResult.data && moveResult.data.changes) || []));
+    }
+
+    if (movedCount <= 0) {
+      return null;
+    }
+
+    this._emitInventoryMoveChanges(session, allChanges);
+    this._refreshBallparkShipPresentation(session, allChanges);
+    this._refreshBallparkInventoryPresentation(session, allChanges);
+    return null;
+  }
+
   Handle_TrashItems(args, session) {
     this._traceInventory("TrashItems", session, { args });
     const itemIDs = this._normalizeItemIdList(args && args.length > 0 ? args[0] : args);
