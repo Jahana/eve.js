@@ -52,6 +52,7 @@ const {
   selectAutoFitFlagForType,
   validateFitForShip,
   getShipBaseAttributeValue,
+  SLOT_FAMILY_FLAGS,
 } = require(path.join(__dirname, "../fitting/liveFittingState"));
 const {
   getShipFittingSnapshot,
@@ -3197,6 +3198,86 @@ class InvBrokerService extends BaseService {
     return this._buildInvKeyVal(session, overrides);
   }
 
+  Handle_StripFitting(args, session) {
+    this._traceInventory("StripFitting", session, { args });
+    const boundContext = this._getBoundContext(session);
+    const shipRecord = this._getShipInventoryRecord(session, boundContext);
+
+    if (!shipRecord) {
+      log.warn(`[InvBroker] StripFitting failed: could not resolve ship record from bound context`);
+      return null;
+    }
+
+    const charID = this._getCharacterId(session);
+    const fittedItems = listFittedItems(charID, shipRecord.itemID);
+    log.debug(`[InvBroker] StripFitting shipID=${shipRecord.itemID} locationID=${shipRecord.locationID} fittedCount=${fittedItems.length}`);
+
+    if (fittedItems.length === 0) {
+      return null;
+    }
+
+    const allChanges = [];
+    let movedCount = 0;
+
+    for (const fittedItem of fittedItems) {
+      if (SLOT_FAMILY_FLAGS.rig.includes(fittedItem.flagID)) {
+        log.debug(`[InvBroker] StripFitting skipping rig itemID=${fittedItem.itemID} flagID=${fittedItem.flagID} (rigs are destroyed, not moved)`);
+        continue;
+      }
+
+      const moveResult = moveItemToLocation(fittedItem.itemID, shipRecord.locationID, ITEM_FLAGS.HANGAR);
+      if (!moveResult.success) {
+        log.warn(`[InvBroker] StripFitting failed to move itemID=${fittedItem.itemID} error=${moveResult.errorMsg}`);
+        continue;
+      }
+
+      movedCount += 1;
+      allChanges.push(...((moveResult.data && moveResult.data.changes) || []));
+    }
+
+    if (movedCount <= 0) {
+      return null;
+    }
+
+    this._emitInventoryMoveChanges(session, allChanges);
+    this._refreshBallparkShipPresentation(session, allChanges);
+    this._refreshBallparkInventoryPresentation(session, allChanges);
+    return null;
+  }
+
+  Handle_DestroyFitting(args, session) {
+    this._traceInventory("DestroyFitting", session, { args });
+    const itemID = this._normalizeInventoryId(args && args.length > 0 ? args[0] : 0, 0);
+    if (itemID <= 0) {
+      log.warn(`[InvBroker] DestroyFitting failed: invalid itemID`);
+      return null;
+    }
+
+    const item = findItemById(itemID);
+    if (!item) {
+      log.warn(`[InvBroker] DestroyFitting failed: itemID=${itemID} not found`);
+      return null;
+    }
+
+    if (!SLOT_FAMILY_FLAGS.rig.includes(item.flagID)) {
+      log.warn(`[InvBroker] DestroyFitting rejected: itemID=${itemID} flagID=${item.flagID} is not a rig slot`);
+      return null;
+    }
+
+    log.debug(`[InvBroker] DestroyFitting itemID=${itemID} flagID=${item.flagID}`);
+    const removeResult = removeInventoryItem(itemID, { removeContents: false });
+    if (!removeResult.success) {
+      log.warn(`[InvBroker] DestroyFitting failed to remove itemID=${itemID} error=${removeResult.errorMsg}`);
+      return null;
+    }
+
+    const changes = (removeResult.data && removeResult.data.changes) || [];
+    this._emitInventoryMoveChanges(session, changes);
+    this._refreshBallparkShipPresentation(session, changes);
+    this._refreshBallparkInventoryPresentation(session, changes);
+    return null;
+  }
+
   Handle_TrashItems(args, session) {
     this._traceInventory("TrashItems", session, { args });
     log.debug("[InvBroker] TrashItems");
@@ -3428,6 +3509,15 @@ class InvBrokerService extends BaseService {
     );
 
     if (!boundContext || !item || !sourceItemDescriptor) {
+      return null;
+    }
+
+    // Rigs cannot be removed from a ship and returned to inventory — they must be destroyed.
+    // If the item is currently in a rig slot, block the move silently.
+    if (SLOT_FAMILY_FLAGS.rig.includes(Number(item.flagID))) {
+      log.warn(
+        `[InvBroker] Add rejected itemID=${itemID} — item is a rig in slot flagID=${item.flagID} and cannot be unfit to inventory`,
+      );
       return null;
     }
 
