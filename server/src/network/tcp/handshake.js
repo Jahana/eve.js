@@ -812,8 +812,8 @@ class EVEHandshake {
         if (log.isVerboseDebugEnabled()) {
           log.info(`[HANDSHAKE] signedFunc output: ${output}`);
           try {
-            rotatingLog.append(path.join(__dirname, "../../..", "tidi_probe.log"), logLine);
-            log.info(`[HANDSHAKE] Probe results written to server/tidi_probe.log`);
+            rotatingLog.append(path.join(__dirname, "../../..", "logs", "tidi_probe.log"), logLine);
+            log.info(`[HANDSHAKE] Probe results written to server/logs/tidi_probe.log`);
           } catch (e) {
             log.warn(`[HANDSHAKE] Could not write probe log: ${e.message}`);
           }
