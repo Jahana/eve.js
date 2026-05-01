@@ -7,3 +7,4 @@ server/tidi_probe.log
 /server/src/_secondary/data/chat
 /tools/ClientCodeGrabber/Latest
 /server/src/logs
+/tools/DataSync/source_json
