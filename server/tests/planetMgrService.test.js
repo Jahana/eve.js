@@ -1,13 +1,30 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
 const path = require("path");
 
 const repoRoot = path.join(__dirname, "..", "..");
+const newDatabaseDataDir = process.env.EVEJS_NEWDB_DATA_DIR
+  ? path.resolve(process.env.EVEJS_NEWDB_DATA_DIR)
+  : path.join(repoRoot, "server/src/newDatabase/data");
+const planetRuntimeStateFile = path.join(
+  newDatabaseDataDir,
+  "planetRuntimeState",
+  "data.json",
+);
 const config = require(path.join(repoRoot, "server/src/config"));
 const database = require(path.join(repoRoot, "server/src/newDatabase"));
 const PlanetMgrService = require(path.join(
   repoRoot,
   "server/src/services/planet/planetMgrService",
+));
+const PlanetOrbitalRegistryBrokerService = require(path.join(
+  repoRoot,
+  "server/src/services/planet/planetOrbitalRegistryBrokerService",
+));
+const InvBrokerService = require(path.join(
+  repoRoot,
+  "server/src/services/inventory/invBrokerService",
 ));
 const planetRuntimeStore = require(path.join(
   repoRoot,
@@ -17,9 +34,32 @@ const itemStore = require(path.join(
   repoRoot,
   "server/src/services/inventory/itemStore",
 ));
+const characterState = require(path.join(
+  repoRoot,
+  "server/src/services/character/characterState",
+));
+const walletState = require(path.join(
+  repoRoot,
+  "server/src/services/account/walletState",
+));
+const spaceRuntime = require(path.join(repoRoot, "server/src/space/runtime"));
+const {
+  unwrapMarshalValue,
+} = require(path.join(repoRoot, "server/src/services/_shared/serviceHelpers"));
+
+const FILETIME_UNIX_EPOCH_OFFSET = 116444736000000000n;
+const SECOND_TICKS = 10000000n;
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function filetimeFromUnixMs(ms) {
+  return (BigInt(ms) * 10000n + FILETIME_UNIX_EPOCH_OFFSET).toString();
+}
+
+function readPlanetRuntimeStateFile() {
+  return JSON.parse(fs.readFileSync(planetRuntimeStateFile, "utf8"));
 }
 
 function keyValEntries(value) {
@@ -37,12 +77,25 @@ function keyValObject(value) {
   return Object.fromEntries(keyValEntries(value));
 }
 
+function writePlanetRuntimeStateForTest(value) {
+  const result = database.write(
+    planetRuntimeStore.TABLE_NAME,
+    "/",
+    cloneJson(value),
+    { force: true },
+  );
+  assert.equal(result.success, true, `Failed to write ${planetRuntimeStore.TABLE_NAME}`);
+  const flushResult = database.flushTableSync(planetRuntimeStore.TABLE_NAME);
+  assert.equal(flushResult.success, true, `Failed to flush ${planetRuntimeStore.TABLE_NAME}`);
+}
+
 function resetPlanetRuntimeState() {
-  database.write(planetRuntimeStore.TABLE_NAME, "/", {
+  writePlanetRuntimeStateForTest({
     schemaVersion: planetRuntimeStore.SCHEMA_VERSION,
     resourcesByPlanetID: {},
     coloniesByKey: {},
     launchesByID: {},
+    acceptedNetworkEditsByKey: {},
     nextIDs: cloneJson(planetRuntimeStore.DEFAULT_NEXT_IDS),
   });
 }
@@ -52,7 +105,7 @@ function withRestoredPlanetRuntimeState(t) {
     database.read(planetRuntimeStore.TABLE_NAME, "/").data || {},
   );
   t.after(() => {
-    database.write(planetRuntimeStore.TABLE_NAME, "/", original, { force: true });
+    writePlanetRuntimeStateForTest(original);
   });
   resetPlanetRuntimeState();
 }
@@ -66,6 +119,28 @@ function withRestoredItemsState(t) {
     itemStore.resetInventoryStoreForTests();
   });
   itemStore.resetInventoryStoreForTests();
+}
+
+function withRestoredCharacterWallet(t, characterID = 140000238, balance = 10000000) {
+  const original = cloneJson(characterState.getCharacterRecord(characterID));
+  t.after(() => {
+    characterState.writeCharacterRecord(characterID, original);
+  });
+  characterState.writeCharacterRecord(characterID, {
+    ...original,
+    balance,
+    balanceChange: 0,
+    walletJournal: [],
+  });
+}
+
+function getWrappedUserErrorMessage(error) {
+  return error &&
+    error.machoErrorResponse &&
+    error.machoErrorResponse.payload &&
+    error.machoErrorResponse.payload.header &&
+    error.machoErrorResponse.payload.header[1] &&
+    error.machoErrorResponse.payload.header[1][0];
 }
 
 test("planetMgr returns an empty list shape when the character has no colonies", () => {
@@ -168,6 +243,7 @@ test("planetMgr bound calls use the bound planet and persist resource quality da
 
 test("planet resource layers are persistent and drive ECU estimates", (t) => {
   withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t);
 
   const service = new PlanetMgrService();
   const session = { characterID: 140000238 };
@@ -223,6 +299,35 @@ test("planet resource layers are persistent and drive ECU estimates", (t) => {
     0.02,
   ], session);
   assert.equal(depletedProgramResult[0] < programResult[0], true);
+});
+
+test("planetMgr flushes colony network edits to disk immediately", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t);
+
+  const service = new PlanetMgrService();
+  const session = { characterID: 140000238 };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  assert.equal(
+    readPlanetRuntimeStateFile().coloniesByKey["40000002:140000238"],
+    undefined,
+  );
+
+  service.Handle_UserUpdateNetwork([
+    [
+      [1, [9001, 2524, 0.1, 0.2]],
+    ],
+  ], session);
+
+  const onDiskState = readPlanetRuntimeStateFile();
+  const colony = onDiskState.coloniesByKey["40000002:140000238"];
+  assert.ok(colony, "Expected colony edit to be present in data.json before debounce delay");
+  assert.equal(colony.planetID, 40000002);
+  assert.equal(colony.ownerID, 140000238);
+  assert.equal(colony.pins.length, 1);
+  assert.equal(colony.pins[0].typeID, 2524);
 });
 
 test("planetMgr returns deterministic resource heatmap bytes for bound planets", (t) => {
@@ -322,6 +427,7 @@ test("planetMgr Phase 0 read-only PI calls return stable empty shapes", (t) => {
 test("planetMgr persists submitted PI colony edits and remaps temporary IDs", (t) => {
   withRestoredPlanetRuntimeState(t);
   withRestoredItemsState(t);
+  withRestoredCharacterWallet(t, 140000238, 5000000);
 
   const service = new PlanetMgrService();
   const shipID = 990000001;
@@ -407,6 +513,13 @@ test("planetMgr persists submitted PI colony edits and remaps temporary IDs", (t
   assert.equal(storedColony.pins.length, 3);
   assert.equal(storedColony.level, 2);
 
+  const wallet = walletState.getCharacterWallet(140000238);
+  assert.equal(wallet.balance, 3370000);
+  const journal = walletState.getCharacterWalletJournal(140000238);
+  assert.equal(journal[0].entryTypeID, walletState.JOURNAL_ENTRY_TYPE.PLANETARY_CONSTRUCTION);
+  assert.equal(journal[0].amount, -1630000);
+  assert.equal(journal[0].referenceID, 40000002);
+
   const characterPlanets = service.Handle_GetPlanetsForChar([], session);
   const planetEntry = keyValObject(listItems(characterPlanets)[0]);
   assert.equal(planetEntry.planetID, 40000002);
@@ -433,6 +546,7 @@ test("planetMgr persists submitted PI colony edits and remaps temporary IDs", (t
 
 test("planetMgr applies PI removal and update commands across an existing colony", (t) => {
   withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t);
 
   const service = new PlanetMgrService();
   const session = { characterID: 140000238 };
@@ -476,8 +590,659 @@ test("planetMgr applies PI removal and update commands across an existing colony
   assert.deepEqual(listItems(updated.routes).map(keyValObject), []);
 });
 
+test("planetMgr does not double charge replayed PI edit submissions", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t, 140000238, 1000000);
+
+  const service = new PlanetMgrService();
+  const session = { characterID: 140000238 };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  const submission = [
+    [
+      [1, [[1, 1], 2848, 0.12, 0.22]],
+    ],
+  ];
+
+  const first = keyValObject(service.Handle_UserUpdateNetwork(submission, session));
+  const firstPins = listItems(first.pins).map(keyValObject);
+  assert.equal(firstPins.length, 1);
+  assert.equal(walletState.getCharacterWallet(140000238).balance, 955000);
+
+  const replay = keyValObject(service.Handle_UserUpdateNetwork(submission, session));
+  const replayPins = listItems(replay.pins).map(keyValObject);
+  assert.equal(replayPins.length, 1);
+  assert.equal(replayPins[0].id, firstPins[0].id);
+  assert.equal(walletState.getCharacterWallet(140000238).balance, 955000);
+  assert.equal(walletState.getCharacterWalletJournal(140000238).length, 1);
+});
+
+test("planetMgr rejects PI construction when the wallet cannot cover it", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t, 140000238, 10000);
+
+  const service = new PlanetMgrService();
+  const session = { characterID: 140000238 };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  assert.throws(
+    () => service.Handle_UserUpdateNetwork([
+      [
+        [1, [[1, 1], 2848, 0.12, 0.22]],
+      ],
+    ], session),
+    (error) => getWrappedUserErrorMessage(error) === "NotEnoughMoney",
+  );
+
+  const state = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  assert.equal(state.coloniesByKey["40000002:140000238"], undefined);
+  assert.equal(walletState.getCharacterWallet(140000238).balance, 10000);
+  assert.equal(walletState.getCharacterWalletJournal(140000238).length, 0);
+});
+
+test("planetMgr lazily simulates ECU and processor output into persisted storage", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t);
+
+  const originalDateNow = Date.now;
+  const startMs = Date.UTC(2026, 0, 1, 0, 0, 0);
+  Date.now = () => startMs;
+  t.after(() => {
+    Date.now = originalDateNow;
+  });
+
+  const service = new PlanetMgrService();
+  const session = { characterID: 140000238 };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  service.Handle_UserUpdateNetwork([
+    [
+      [1, [9001, 2524, 0.1, 0.2]],
+      [1, [[1, 1], 2848, 0.12, 0.22]],
+      [10, [[1, 1], 0, 0.12, 0.22]],
+      [13, [[1, 1], 2268, 0.02]],
+      [1, [[1, 2], 2473, 0.15, 0.25]],
+      [8, [[1, 2], 121]],
+      [1, [[1, 3], 2541, 0.18, 0.28]],
+      [3, [9001, [1, 1], 0]],
+      [3, [[1, 1], [1, 2], 0]],
+      [3, [[1, 2], [1, 3], 0]],
+      [6, [[2, 1], [[1, 1], [1, 2]], 2268, 3000]],
+      [6, [[2, 2], [[1, 2], [1, 3]], 3645, 20]],
+    ],
+  ], session);
+
+  const startFiletime = filetimeFromUnixMs(startMs);
+  const state = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const colony = state.coloniesByKey["40000002:140000238"];
+  const ecuPin = colony.pins.find((pin) => pin.typeID === 2848);
+  const processorPin = colony.pins.find((pin) => pin.typeID === 2473);
+  const storagePin = colony.pins.find((pin) => pin.typeID === 2541);
+  assert.ok(ecuPin);
+  assert.ok(processorPin);
+  assert.ok(storagePin);
+
+  colony.currentSimTime = startFiletime;
+  for (const pin of colony.pins) {
+    pin.lastRunTime = startFiletime;
+    pin.contents = {};
+  }
+  Object.assign(ecuPin, {
+    cycleTime: Number(60n * SECOND_TICKS),
+    programType: 2268,
+    qtyPerCycle: 3000,
+    state: 1,
+    installTime: startFiletime,
+    expiryTime: (BigInt(startFiletime) + 24n * 60n * 60n * SECOND_TICKS).toString(),
+  });
+  Object.assign(processorPin, {
+    state: 0,
+    schematicID: 121,
+    hasReceivedInputs: false,
+    receivedInputsLastCycle: false,
+  });
+  database.write(planetRuntimeStore.TABLE_NAME, "/", state, { force: true });
+
+  const targetMs = startMs + 60_000 + (30 * 60_000) + 1_000;
+  Date.now = () => targetMs;
+
+  service.Handle_GetPlanetInfo([], session);
+
+  const simulatedState = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const simulatedColony = simulatedState.coloniesByKey["40000002:140000238"];
+  const simulatedStorage = simulatedColony.pins.find((pin) => pin.typeID === 2541);
+  const simulatedProcessor = simulatedColony.pins.find((pin) => pin.typeID === 2473);
+  assert.equal(simulatedColony.currentSimTime, filetimeFromUnixMs(targetMs));
+  assert.equal(simulatedStorage.contents["3645"], 20);
+  assert.equal(simulatedProcessor.state, 1);
+
+  service.Handle_GetPlanetInfo([], session);
+  const idempotentState = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const idempotentStorage = idempotentState
+    .coloniesByKey["40000002:140000238"]
+    .pins
+    .find((pin) => pin.typeID === 2541);
+  assert.equal(idempotentStorage.contents["3645"], 20);
+});
+
+test("planetMgr launches command center commodities and exposes launch details", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  let physicalContainerID = 0;
+  t.after(() => {
+    if (physicalContainerID > 0) {
+      spaceRuntime.removeDynamicEntity(30000001, physicalContainerID);
+    }
+  });
+  withRestoredItemsState(t);
+  withRestoredCharacterWallet(t, 140000238, 1000000);
+
+  const originalDateNow = Date.now;
+  const launchMs = Date.UTC(2026, 0, 1, 2, 0, 0);
+  Date.now = () => launchMs;
+  t.after(() => {
+    Date.now = originalDateNow;
+  });
+
+  const service = new PlanetMgrService();
+  const notifications = [];
+  const session = {
+    characterID: 140000238,
+    sendNotification: (...args) => notifications.push(args),
+  };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  service.Handle_UserUpdateNetwork([
+    [
+      [1, [9001, 2524, 0.1, 0.2]],
+    ],
+  ], session);
+
+  const state = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const colony = state.coloniesByKey["40000002:140000238"];
+  const commandPin = colony.pins.find((pin) => pin.pinID === 9001);
+  commandPin.contents = { "3645": 12 };
+  database.write(planetRuntimeStore.TABLE_NAME, "/", state, { force: true });
+
+  const lastLaunchTime = service.Handle_UserLaunchCommodities([
+    9001,
+    { 3645: 7 },
+  ], session);
+  assert.equal(lastLaunchTime, BigInt(filetimeFromUnixMs(launchMs)));
+  assert.equal(walletState.getCharacterWallet(140000238).balance, 999580);
+  const journal = walletState.getCharacterWalletJournal(140000238);
+  assert.equal(journal[0].entryTypeID, walletState.JOURNAL_ENTRY_TYPE.PLANETARY_EXPORT_TAX);
+  assert.equal(journal[0].amount, -420);
+  assert.equal(journal[0].referenceID, 40000002);
+
+  const updatedState = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const updatedColony = updatedState.coloniesByKey["40000002:140000238"];
+  const updatedCommandPin = updatedColony.pins.find((pin) => pin.pinID === 9001);
+  assert.equal(updatedCommandPin.contents["3645"], 5);
+  assert.equal(updatedCommandPin.lastLaunchTime, filetimeFromUnixMs(launchMs));
+
+  const launches = listItems(service.Handle_GetMyLaunchesDetails([], session)).map(keyValObject);
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].launchID, 910000000000);
+  assert.notEqual(launches[0].itemID, launches[0].launchID);
+  physicalContainerID = launches[0].itemID;
+  assert.equal(launches[0].ownerID, 140000238);
+  assert.equal(launches[0].planetID, 40000002);
+  assert.equal(launches[0].solarSystemID, 30000001);
+  assert.equal(launches[0].launchTime, BigInt(filetimeFromUnixMs(launchMs)));
+  assert.equal(Number.isFinite(launches[0].x), true);
+  assert.equal(Number.isFinite(launches[0].y), true);
+  assert.equal(Number.isFinite(launches[0].z), true);
+
+  const launchRecord = updatedState.launchesByID[String(launches[0].launchID)];
+  assert.deepEqual(launchRecord.contents, { "3645": 7 });
+  assert.equal(launchRecord.itemID, physicalContainerID);
+
+  const physicalContainer = itemStore.findItemById(physicalContainerID);
+  assert.ok(physicalContainer);
+  assert.equal(physicalContainer.typeID, 2263);
+  assert.equal(physicalContainer.locationID, 30000001);
+  assert.equal(physicalContainer.flagID, 0);
+  assert.equal(physicalContainer.expiresAtMs, launchMs + (5 * 24 * 60 * 60 * 1000));
+  const physicalContents = itemStore.listContainerItems(
+    140000238,
+    physicalContainerID,
+    itemStore.ITEM_FLAGS.HANGAR,
+  );
+  assert.equal(physicalContents.length, 1);
+  assert.equal(physicalContents[0].typeID, 3645);
+  assert.equal(physicalContents[0].stacksize, 7);
+  assert.deepEqual(notifications.at(-2), [
+    "OnRefreshPins",
+    "clientID",
+    [[9001]],
+  ]);
+  assert.deepEqual(notifications.at(-1), [
+    "OnPILaunchesChange",
+    "clientID",
+    [],
+  ]);
+
+  assert.equal(service.Handle_DeleteLaunch([launches[0].launchID], session), true);
+  assert.deepEqual(service.Handle_GetMyLaunchesDetails([], session), {
+    type: "list",
+    items: [],
+  });
+});
+
+test("planetMgr performs expedited transfers and enforces source cooldown", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t, 140000238, 10000000);
+
+  const originalDateNow = Date.now;
+  const startMs = Date.UTC(2026, 0, 1, 3, 0, 0);
+  Date.now = () => startMs;
+  t.after(() => {
+    Date.now = originalDateNow;
+  });
+
+  const service = new PlanetMgrService();
+  const notifications = [];
+  const session = {
+    characterID: 140000238,
+    sendNotification: (...args) => notifications.push(args),
+  };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  const colonyResult = keyValObject(service.Handle_UserUpdateNetwork([
+    [
+      [1, [9001, 2524, 0.1, 0.2]],
+      [1, [[1, 1], 2541, 0.12, 0.22]],
+      [3, [9001, [1, 1], 0]],
+    ],
+  ], session));
+  const storageID = listItems(colonyResult.pins)
+    .map(keyValObject)
+    .find((pin) => pin.typeID === 2541)
+    .id;
+
+  const state = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const colony = state.coloniesByKey["40000002:140000238"];
+  const storagePin = colony.pins.find((pin) => pin.pinID === storageID);
+  storagePin.contents = { "3645": 10 };
+  storagePin.lastRunTime = filetimeFromUnixMs(startMs);
+  database.write(planetRuntimeStore.TABLE_NAME, "/", state, { force: true });
+
+  const [simTime, sourceRunTime] = service.Handle_UserTransferCommodities([
+    [storageID, 9001],
+    { 3645: 4 },
+  ], session);
+  assert.equal(simTime, BigInt(filetimeFromUnixMs(startMs)));
+  assert.equal(
+    sourceRunTime - simTime >= 300n * SECOND_TICKS,
+    true,
+  );
+
+  const updatedState = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const updatedColony = updatedState.coloniesByKey["40000002:140000238"];
+  const updatedStorage = updatedColony.pins.find((pin) => pin.pinID === storageID);
+  const updatedCommand = updatedColony.pins.find((pin) => pin.pinID === 9001);
+  assert.equal(updatedStorage.contents["3645"], 6);
+  assert.equal(updatedStorage.lastRunTime, sourceRunTime.toString());
+  assert.equal(updatedCommand.contents["3645"], 4);
+  assert.deepEqual(notifications.at(-1), [
+    "OnRefreshPins",
+    "clientID",
+    [[storageID, 9001]],
+  ]);
+
+  assert.throws(
+    () => service.Handle_UserTransferCommodities([
+      [storageID, 9001],
+      { 3645: 1 },
+    ], session),
+    (error) => getWrappedUserErrorMessage(error) === "RouteFailedValidationExpeditedSourceNotReady",
+  );
+});
+
+test("planetMgr rejects command center launches when export tax cannot be paid", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t, 140000238, 100);
+
+  const service = new PlanetMgrService();
+  const session = { characterID: 140000238 };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  service.Handle_UserUpdateNetwork([
+    [
+      [1, [9001, 2524, 0.1, 0.2]],
+    ],
+  ], session);
+
+  const state = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const colony = state.coloniesByKey["40000002:140000238"];
+  const commandPin = colony.pins.find((pin) => pin.pinID === 9001);
+  commandPin.contents = { "3645": 12 };
+  database.write(planetRuntimeStore.TABLE_NAME, "/", state, { force: true });
+
+  assert.throws(
+    () => service.Handle_UserLaunchCommodities([
+      9001,
+      { 3645: 7 },
+    ], session),
+    (error) => getWrappedUserErrorMessage(error) === "NotEnoughMoney",
+  );
+
+  const updatedState = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const updatedColony = updatedState.coloniesByKey["40000002:140000238"];
+  const updatedCommandPin = updatedColony.pins.find((pin) => pin.pinID === 9001);
+  assert.equal(updatedCommandPin.contents["3645"], 12);
+  assert.deepEqual(updatedState.launchesByID, {});
+  assert.equal(walletState.getCharacterWallet(140000238).balance, 100);
+  assert.equal(walletState.getCharacterWalletJournal(140000238).length, 0);
+});
+
+test("invbroker ImportExportWithPlanet moves launchpad commodities and journals taxes", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredItemsState(t);
+  withRestoredCharacterWallet(t, 140000238, 5000000);
+
+  const planetMgr = new PlanetMgrService();
+  const planetSession = { characterID: 140000238 };
+  const bindResult = planetMgr.Handle_MachoBindObject([40000002, null], planetSession);
+  planetSession.currentBoundObjectID = bindResult[0].value.value[0];
+
+  const colonyResult = keyValObject(planetMgr.Handle_UserUpdateNetwork([
+    [
+      [1, [9001, 2524, 0.1, 0.2]],
+      [9, [9001, 2]],
+      [1, [[1, 1], 2256, 0.15, 0.25]],
+    ],
+  ], planetSession));
+  const launchpadID = listItems(colonyResult.pins)
+    .map(keyValObject)
+    .find((pin) => pin.typeID === 2256)
+    .id;
+
+  const state = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const colony = state.coloniesByKey["40000002:140000238"];
+  const launchpad = colony.pins.find((pin) => pin.pinID === launchpadID);
+  launchpad.contents = { "3645": 12 };
+  database.write(planetRuntimeStore.TABLE_NAME, "/", state, { force: true });
+
+  const customsOfficeID = 990900001;
+  const customsGrant = itemStore.grantItemToCharacterLocation(
+    140000238,
+    customsOfficeID,
+    itemStore.ITEM_FLAGS.HANGAR,
+    3645,
+    5,
+  );
+  assert.equal(customsGrant.success, true);
+  const importItemID = customsGrant.data.items[0].itemID;
+
+  const notifications = [];
+  const invBroker = new InvBrokerService();
+  const invSession = {
+    characterID: 140000238,
+    sendNotification: (...args) => notifications.push(args),
+  };
+  const customsInventory = invBroker.Handle_GetInventoryFromId([customsOfficeID], invSession);
+  invSession.currentBoundObjectID = customsInventory.value.value[0];
+
+  assert.equal(invBroker.Handle_ImportExportWithPlanet([
+    launchpadID,
+    { [importItemID]: 5 },
+    { 3645: 7 },
+    0.05,
+  ], invSession), null);
+
+  const updatedState = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  const updatedLaunchpad = updatedState
+    .coloniesByKey["40000002:140000238"]
+    .pins
+    .find((pin) => pin.pinID === launchpadID);
+  assert.equal(updatedLaunchpad.contents["3645"], 10);
+
+  const customsItems = itemStore.listContainerItems(
+    140000238,
+    customsOfficeID,
+    itemStore.ITEM_FLAGS.HANGAR,
+  );
+  const customsWater = customsItems
+    .filter((item) => item.typeID === 3645)
+    .reduce((sum, item) => sum + item.stacksize, 0);
+  assert.equal(customsWater, 7);
+
+  const wallet = walletState.getCharacterWallet(140000238);
+  assert.equal(wallet.balance, 2589810);
+  const journal = walletState.getCharacterWalletJournal(140000238);
+  assert.equal(journal[0].entryTypeID, walletState.JOURNAL_ENTRY_TYPE.PLANETARY_EXPORT_TAX);
+  assert.equal(journal[0].amount, -140);
+  assert.equal(journal[1].entryTypeID, walletState.JOURNAL_ENTRY_TYPE.PLANETARY_IMPORT_TAX);
+  assert.equal(journal[1].amount, -50);
+  assert.deepEqual(notifications.at(-1), [
+    "OnMajorPlanetStateUpdate",
+    "clientID",
+    [40000002, false],
+  ]);
+  assert.deepEqual(notifications.at(-2), [
+    "OnRefreshPins",
+    "clientID",
+    [[launchpadID]],
+  ]);
+});
+
+test("invbroker ImportExportWithPlanet rejects stale customs tax rates", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredItemsState(t);
+  withRestoredCharacterWallet(t, 140000238, 5000000);
+
+  const planetMgr = new PlanetMgrService();
+  const planetSession = { characterID: 140000238 };
+  const bindResult = planetMgr.Handle_MachoBindObject([40000002, null], planetSession);
+  planetSession.currentBoundObjectID = bindResult[0].value.value[0];
+
+  const colonyResult = keyValObject(planetMgr.Handle_UserUpdateNetwork([
+    [
+      [1, [9001, 2524, 0.1, 0.2]],
+      [9, [9001, 2]],
+      [1, [[1, 1], 2256, 0.15, 0.25]],
+    ],
+  ], planetSession));
+  const launchpadID = listItems(colonyResult.pins)
+    .map(keyValObject)
+    .find((pin) => pin.typeID === 2256)
+    .id;
+
+  const customsOfficeID = 990900002;
+  const invBroker = new InvBrokerService();
+  const invSession = { characterID: 140000238 };
+  const customsInventory = invBroker.Handle_GetInventoryFromId([customsOfficeID], invSession);
+  invSession.currentBoundObjectID = customsInventory.value.value[0];
+
+  assert.throws(
+    () => invBroker.Handle_ImportExportWithPlanet([
+      launchpadID,
+      {},
+      { 3645: 1 },
+      0.1,
+    ], invSession),
+    (error) => getWrappedUserErrorMessage(error) === "TaxChanged",
+  );
+
+  assert.equal(walletState.getCharacterWallet(140000238).balance, 2590000);
+  assert.equal(walletState.getCharacterWalletJournal(140000238).length, 1);
+});
+
+test("planetMgr rejects PI edits that exceed command center CPU before wallet debit", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t, 140000238, 5000000);
+
+  const service = new PlanetMgrService();
+  const session = { characterID: 140000238 };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  assert.throws(
+    () => service.Handle_UserUpdateNetwork([
+      [
+        [1, [9001, 2524, 0.1, 0.2]],
+        [1, [[1, 1], 2481, 0.12, 0.22]],
+        [1, [[1, 2], 2481, 0.13, 0.23]],
+        [1, [[1, 3], 2481, 0.14, 0.24]],
+        [1, [[1, 4], 2481, 0.15, 0.25]],
+        [1, [[1, 5], 2481, 0.16, 0.26]],
+        [1, [[1, 6], 2481, 0.17, 0.27]],
+        [1, [[1, 7], 2481, 0.18, 0.28]],
+        [1, [[1, 8], 2481, 0.19, 0.29]],
+        [1, [[1, 9], 2481, 0.2, 0.3]],
+      ],
+    ], session),
+    (error) => getWrappedUserErrorMessage(error) === "CannotAddToColonyCPUUsageExceeded",
+  );
+
+  const state = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  assert.equal(state.coloniesByKey["40000002:140000238"], undefined);
+  assert.equal(walletState.getCharacterWallet(140000238).balance, 5000000);
+  assert.equal(walletState.getCharacterWalletJournal(140000238).length, 0);
+});
+
+test("planetMgr rejects PI routes with too many waypoints before wallet debit", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t, 140000238, 5000000);
+
+  const service = new PlanetMgrService();
+  const session = { characterID: 140000238 };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  assert.throws(
+    () => service.Handle_UserUpdateNetwork([
+      [
+        [1, [9001, 2524, 0.1, 0.2]],
+        [1, [[1, 1], 2541, 0.11, 0.21]],
+        [1, [[1, 2], 2541, 0.12, 0.22]],
+        [1, [[1, 3], 2541, 0.13, 0.23]],
+        [1, [[1, 4], 2541, 0.14, 0.24]],
+        [1, [[1, 5], 2541, 0.15, 0.25]],
+        [1, [[1, 6], 2541, 0.16, 0.26]],
+        [1, [[1, 7], 2541, 0.17, 0.27]],
+        [6, [[2, 1], [9001, [1, 1], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6], [1, 7]], 3645, 1]],
+      ],
+    ], session),
+    (error) => getWrappedUserErrorMessage(error) === "CannotRouteTooManyWaypoints",
+  );
+
+  const state = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  assert.equal(state.coloniesByKey["40000002:140000238"], undefined);
+  assert.equal(walletState.getCharacterWallet(140000238).balance, 5000000);
+  assert.equal(walletState.getCharacterWalletJournal(140000238).length, 0);
+});
+
+test("planetOrbitalRegistryBroker returns a default accessible tax rate", () => {
+  const service = new PlanetOrbitalRegistryBrokerService();
+
+  assert.equal(service.Handle_GetTaxRate([123456789]), 0.05);
+  assert.equal(service.Handle_RevertOrbitalsToInterBus([]), null);
+});
+
+test("planetMgr Phase 6 diagnostics, GM sync, and launch cleanup stay stable", (t) => {
+  withRestoredPlanetRuntimeState(t);
+  let physicalContainerID = 0;
+  t.after(() => {
+    if (physicalContainerID > 0) {
+      spaceRuntime.removeDynamicEntity(30000001, physicalContainerID);
+    }
+  });
+  withRestoredItemsState(t);
+  withRestoredCharacterWallet(t);
+
+  const originalDateNow = Date.now;
+  const launchMs = Date.UTC(2026, 0, 2, 0, 0, 0);
+  Date.now = () => launchMs;
+  t.after(() => {
+    Date.now = originalDateNow;
+  });
+
+  const service = new PlanetMgrService();
+  const notifications = [];
+  const session = {
+    characterID: 140000238,
+    sendNotification: (...args) => notifications.push(args),
+  };
+  const bindResult = service.Handle_MachoBindObject([40000002, null], session);
+  session.currentBoundObjectID = bindResult[0].value.value[0];
+
+  service.Handle_GetPlanetResourceInfo([], session);
+  service.Handle_UserUpdateNetwork([
+    [
+      [1, [9001, 2524, 0.1, 0.2]],
+    ],
+  ], session);
+
+  const addResult = unwrapMarshalValue(service.Handle_GMAddCommodity([
+    9001,
+    3645,
+    9,
+  ], session));
+  assert.equal(addResult.success, true);
+  assert.equal(addResult.added, 9);
+
+  service.Handle_UserLaunchCommodities([
+    9001,
+    { 3645: 4 },
+  ], session);
+  const launchState = database.read(planetRuntimeStore.TABLE_NAME, "/").data;
+  physicalContainerID = Object.values(launchState.launchesByID || {})[0].itemID;
+
+  const diagnostics = unwrapMarshalValue(
+    service.Handle_GMGetPlanetDiagnostics([40000002], session),
+  );
+  assert.equal(diagnostics.planetID, 40000002);
+  assert.equal(diagnostics.ownerID, 140000238);
+  assert.equal(diagnostics.colonyCount, 1);
+  assert.equal(diagnostics.colonies[0].pinCount, 1);
+  assert.equal(diagnostics.launches.active, 1);
+  assert.equal(diagnostics.resources.resourceTypeIDs.includes(2268), true);
+
+  const localReport = unwrapMarshalValue(
+    service.Handle_GMGetLocalDistributionReport([40000002, [0.1, 0.2]], session),
+  );
+  assert.equal(localReport.planetID, 40000002);
+  assert.equal(Number(localReport.resources["2268"]) > 0, true);
+
+  const completeResource = keyValEntries(
+    service.Handle_GMGetCompleteResource([2268, "base"], session),
+  );
+  assert.equal(completeResource.get("numBands"), 30);
+  assert.equal(completeResource.get("data").value.length, 30 * 30 * 4);
+
+  const [simulationDuration, remoteColonyData] =
+    service.Handle_GMGetSynchedServerState([140000238], session);
+  assert.equal(typeof simulationDuration, "bigint");
+  assert.equal(keyValObject(remoteColonyData).ownerID, 140000238);
+
+  Date.now = () => launchMs + (40 * 24 * 60 * 60 * 1000);
+  const cleanup = unwrapMarshalValue(
+    service.Handle_GMCleanupExpiredLaunches([35], session),
+  );
+  assert.equal(cleanup.scanned, 1);
+  assert.equal(cleanup.deleted, 1);
+  assert.deepEqual(service.Handle_GetMyLaunchesDetails([], session), {
+    type: "list",
+    items: [],
+  });
+  assert.deepEqual(notifications.at(-1), [
+    "OnPILaunchesChange",
+    "clientID",
+    [],
+  ]);
+});
+
 test("planetMgr estimates ECU program results and abandons persistent colonies", (t) => {
   withRestoredPlanetRuntimeState(t);
+  withRestoredCharacterWallet(t);
 
   const service = new PlanetMgrService();
   const notifications = [];

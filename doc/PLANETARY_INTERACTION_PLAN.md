@@ -296,19 +296,30 @@ Tests:
 
 Goal: make colonies produce materials over time.
 
+Current status:
+
+- Implemented lazy authoritative simulation on colony reads (`GetPlanetInfo`, planet list/summary reads) and before `UserUpdateNetwork` applies new client edits.
+- Implemented ECU cycle catch-up from persisted `lastRunTime`, `cycleTime`, `qtyPerCycle`, `programType`, and `expiryTime`.
+- Implemented basic processor cycle catch-up from persisted schematics, including P0 input consumption and P1 output production.
+- Implemented route movement from ECU output to processors/storage and from processor output to storage.
+- Implemented storage capacity checks using type volume and pin capacity for command centers, storage facilities, and launchpads.
+- Implemented idempotent simulation checkpoints through `currentSimTime`.
+- Still needed: advanced multiplayer visibility if the client later needs more than safe summary shapes, and broader processor-chain coverage.
+
 Server work:
 
 - Implement authoritative lazy simulation on:
-  - `GetPlanetInfo`
-  - `UserUpdateNetwork`
-  - `UserTransferCommodities`
-  - `UserLaunchCommodities`
-  - import/export
-- Route ECU output into destination pins.
-- Run processor cycles using schematics.
-- Enforce storage capacity.
+  - `GetPlanetInfo` - implemented
+  - planet list/summary reads - implemented
+  - `UserUpdateNetwork` - implemented before applying edits
+  - `UserTransferCommodities` - implemented in Phase 8
+  - `UserLaunchCommodities` - implemented in Phase 5
+  - import/export - implemented in Phase 7
+- Route ECU output into destination pins - implemented.
+- Run processor cycles using schematics - implemented for persisted catch-up.
+- Enforce storage capacity - implemented for commodity moves into storage-like pins.
 - Enforce route path/link validity and bandwidth.
-- Implement expedited transfers and cooldown/runtime updates.
+- Implement expedited transfers and cooldown/runtime updates - implemented in Phase 8.
 
 Data to create:
 
@@ -320,31 +331,43 @@ Research/data still needed:
 - Confirm processor backlog/overflow behavior expected by the client.
 - Confirm route max hop limits and link bandwidth formulas.
 - Confirm command center and launchpad storage behavior.
+- Capture or inspect client behavior for unrouted processor output and full processor input buffers.
 
 Tests:
 
-- P0 routes from ECU to storage/processor.
-- Basic processor P0 to P1 cycle.
+- P0 routes from ECU to storage/processor - covered by lazy simulation regression.
+- Basic processor P0 to P1 cycle - covered by lazy simulation regression.
 - Advanced/high-tech processor schematic cycles.
 - Overflow cases do not duplicate materials.
-- Simulation is idempotent when called repeatedly at the same timestamp.
+- Simulation is idempotent when called repeatedly at the same timestamp - covered.
 
 ## Phase 5: Launches, Customs Offices, And Import/Export
 
 Goal: complete material movement between planet surface, space, customs office, and inventory.
 
+Current status:
+
+- Implemented `UserLaunchCommodities(commandPinID, commoditiesToLaunch)` for command centers.
+- Implemented launch cooldown validation, command-center commodity removal, `lastLaunchTime` updates, and persistent launch records.
+- Implemented `GetMyLaunchesDetails()` rows for the launch journal.
+- Implemented `DeleteLaunch(launchID)` soft deletion and launch-list filtering.
+- Implemented launch pickup coordinates and `CmdWarpToStuff('launch', launchID)` fallback to those coordinates when no physical launch container entity exists.
+- Implemented physical command-center launch containers as inventory-backed `Planetary Launch Container` space items containing launched commodities.
+- Added `planetOrbitalRegistryBroker.GetTaxRate(customsOfficeID)` with a dev-default accessible tax rate.
+- Still needed: real POCO/customs-office ownership polish and any deeper customs-office access rules beyond the current dev-default tax path.
+
 Server work:
 
-- Implement `UserLaunchCommodities`.
-- Persist launch containers and expose them through `GetMyLaunchesDetails`.
-- Implement launch deletion/expiry.
-- Spawn or expose launch pickup locations as needed by space/warp code.
-- Add `planetOrbitalRegistryBroker`.
-- Implement `GetTaxRate(customsOfficeID)`.
+- Implement `UserLaunchCommodities` - implemented for command centers.
+- Persist launch containers and expose them through `GetMyLaunchesDetails` - implemented as launch records with coordinates and contents.
+- Implement launch deletion/expiry - deletion implemented; expiry display supported by launch time, cleanup pending.
+- Spawn or expose launch pickup locations as needed by space/warp code - physical launch containers implemented with coordinate fallback.
+- Add `planetOrbitalRegistryBroker` - implemented.
+- Implement `GetTaxRate(customsOfficeID)` - implemented with a dev-default rate until POCO ownership/access is modeled.
 - Ensure customs office slim items expose `planetID`.
-- Extend inventory bound objects with `ImportExportWithPlanet`.
-- Move commodities between customs-office inventory and launchpad pin contents.
-- Charge taxes where economy support exists.
+- Extend inventory bound objects with `ImportExportWithPlanet` - implemented for bound customs inventories.
+- Move commodities between customs-office inventory and launchpad pin contents - implemented for the dev-default customs path.
+- Wallet debits and tax journaling are handled in Phase 7.
 
 Data to create:
 
@@ -355,14 +378,15 @@ Data to create:
 Research/data still needed:
 
 - Current server representation of POCO/customs office items.
+- Decide whether the dev server should auto-create virtual InterBus customs offices for empty systems or require anchored POCOs for testing.
 - Whether nullsec skyhooks need to replace customs offices for this client/server world.
-- Tax formula parity and owner/access rules.
-- Wallet journal entries needed by the client.
+- Tax formula parity, owner/access rules, and tax recipients.
 
 Tests:
 
-- Command center launch removes pin contents and creates launch details.
-- Journal launch list renders active and expired launches.
+- Command center launch removes pin contents and creates launch details - covered.
+- Journal launch list renders active launch rows - covered.
+- Launch deletion removes rows from `GetMyLaunchesDetails` - covered.
 - Import/export transfers items correctly.
 - Tax changes trigger `TaxChanged` behavior.
 - No duplication across failed import/export attempts.
@@ -371,13 +395,27 @@ Tests:
 
 Goal: make PI visible, stable, and maintainable in normal play.
 
+Current status:
+
+- Implemented minimal safe foreign-colony/extractor summary shapes from existing colony records.
+- Implemented GM/debug resource helpers used by the client:
+  - `GMGetCompleteResource(resourceTypeID, layer)`
+  - `GMGetLocalDistributionReport(planetID, surfacePoint)`
+  - `GMGetSynchedServerState(charID)`
+- Implemented server-operator diagnostics:
+  - `GMGetPlanetDiagnostics(planetID, ownerID)`
+  - `GMAddCommodity(pinID, typeID, quantity)`
+  - `GMCleanupExpiredLaunches(maxAgeDays, ownerID)`
+- Implemented stale launch cleanup that keeps normal expired journal entries around, but can retire very old launch records.
+- Still needed: optional migration tooling and broader import/export notifications once POCO support exists.
+
 Server work:
 
-- Implement other-character command center/extractor visibility.
-- Implement full foreign colony network payloads.
-- Add GM/debug calls only if useful for server operators.
-- Add periodic cleanup for expired launches and abandoned state.
-- Add admin diagnostics for planet resources, colony state, and simulation deltas.
+- Do not prioritize other-character command center visibility; this server does not need that parity unless the client requires a response shape.
+- Keep extractor/foreign-colony visibility to minimal safe shapes only - implemented through summary calls.
+- Add GM/debug calls only if useful for server operators - implemented.
+- Add periodic cleanup for expired launches and abandoned state - stale launch cleanup implemented; abandoned colony cleanup pending only if needed.
+- Add admin diagnostics for planet resources, colony state, and simulation deltas - implemented.
 
 Data to create:
 
@@ -391,6 +429,164 @@ Research/data still needed:
 
 Tests:
 
-- Other-player command centers render without revealing private data.
-- Notifications refresh planet windows and colony list.
+- Notifications refresh planet windows and colony list - covered for edit submission, launch creation, and launch cleanup.
 - Runtime migration preserves existing colonies/resources.
+- GM diagnostics and synced server-state calls stay marshal-safe - covered.
+
+## Phase 7: PI Wallet Accounting And Economic Enforcement
+
+Goal: make every PI ISK movement server-authoritative, journaled, idempotent, and safe from duplication.
+
+Current status:
+
+- Implemented initial server-side PI wallet accounting for colony construction edits and command-center launches.
+- Added PI journal reference constants and account entry-type names:
+  - `refPlanetaryImportTax = 96`
+  - `refPlanetaryExportTax = 97`
+  - `refPlanetaryConstruction = 98`
+- Added a shared PI cost calculator for construction costs, command center upgrade costs, import tax, and export tax.
+- `UserUpdateNetwork` now quotes construction cost before applying edits, debits the character wallet, journals construction charges, and stores accepted edit hashes to avoid double charging replayed submissions.
+- Command center placement still consumes the inventory command center item but does not also charge the command center base price.
+- Command center launches now preflight the launch, debit export tax, journal it, and leave commodities/launch state unchanged if the wallet cannot pay.
+- `ImportExportWithPlanet` is implemented on bound customs-office inventories for launchpad import/export, including stale tax rejection, import/export tax journals, customs inventory movement, and launchpad content updates.
+- Still needed: real POCO owner tax routing, customs-office access/standing rules, physical POCO inventory/capacity parity, and the wider server-authoritative CPU/power/link validation pass.
+- The client already displays several PI costs locally:
+  - colony construction cost from `cumulativePinCreationCost`
+  - command center upgrade cost from `planetCommon.GetUpgradeCost(currentLevel, desiredLevel)`
+  - command center launch export tax from `pin.GetExportTax(...)`
+  - customs office import/export taxes from `ImportExportWithPlanet(spaceportPinID, importData, exportData, taxRate)`
+- The server wallet integration point is `server/src/services/account/walletState.js` through `adjustCharacterBalance(...)`, wallet journal storage, and `OnAccountChange` notifications.
+
+Server work:
+
+- Add PI journal constants to `JOURNAL_ENTRY_TYPE` and account-service formatting maps - implemented.
+- Add a small PI cost calculator module, or equivalent helpers in `planetStaticData`/`planetRuntimeStore`, so all PI handlers use one source of truth - implemented.
+- Recalculate `UserUpdateNetwork` edit costs on the server before applying colony edits:
+  - charge type `basePrice` for newly-created non-command-center pins - implemented
+  - do not charge command center base price when the command center item was already consumed from inventory - implemented
+  - charge command center upgrade deltas using `getCommandCenterUpgradeCost(currentLevel, desiredLevel)` - implemented
+  - do not issue removal refunds unless live/client behavior confirms submitted removals should refund ISK - implemented as no refund
+  - confirm whether link construction/upgrades have ISK costs, or only CPU/power usage
+- Debit the character wallet atomically with accepted colony updates:
+  - validate colony changes first
+  - verify sufficient ISK using existing wallet helpers - implemented
+  - debit with `adjustCharacterBalance(characterID, -amount, { entryTypeID: refPlanetaryConstruction, ... })` - implemented
+  - apply the colony edit only if the debit succeeds - implemented with compensating refund if the later apply fails
+  - avoid double charges from packet retry/replay by storing an accepted edit hash, submission ID, or equivalent transaction marker - implemented with accepted edit hashes
+- Charge command center launch taxes:
+  - recalculate launch export tax server-side before removing commodities - implemented
+  - use the command center or launch pin export-tax attributes and commodity tax multipliers - implemented with V23 client parity multiplier behavior
+  - debit with `refPlanetaryExportTax = 97` - implemented
+  - if the debit fails, leave pin contents and launch state unchanged - implemented
+- Implement wallet accounting for `ImportExportWithPlanet`:
+  - recalculate the current customs office tax rate with `planetOrbitalRegistryBroker.GetTaxRate(customsOfficeID)` - implemented with the current dev-default `0.05`
+  - if the client-supplied `taxRate` is stale, return the client-compatible `TaxChanged` error - implemented
+  - charge export tax for commodities leaving the planet - implemented
+  - charge import tax for commodities entering the planet - implemented
+  - move inventory only after successful debits - implemented for bound customs inventory and launchpad pin contents
+  - keep import/export movement atomic so failed payments never duplicate or delete commodities - covered for stale-tax and insufficient-wallet preflight; broader rollback remains future hardening
+- Decide tax recipient behavior:
+  - for virtual/default InterBus customs offices, tax can be an ISK sink
+  - for real POCOs, later route tax to the owner corporation wallet when corp-wallet plumbing is ready
+- Add server-authoritative integrity checks that money enforcement makes more important:
+  - CPU and power validation for pin, command-center upgrade, extractor-head, link, and route edits
+  - link bandwidth and route waypoint limits
+  - storage and customs office capacity checks
+  - expedited transfer cooldown/runtime validation
+- Add diagnostics:
+  - quote current edit cost/tax cost in GM diagnostics
+  - log wallet debits with planet ID, pin ID, reference ID, and reason
+
+Data to create:
+
+- PI wallet transaction constants and account-service reference-name mappings - implemented.
+- Optional `planetRuntimeState` audit section for accepted PI edit hashes or transaction IDs - implemented for accepted edit hashes.
+- Optional persisted customs office tax/owner config once real POCO ownership is modeled.
+- Optional GM/admin diagnostics for pending construction costs and import/export tax quotes.
+
+Research/data still needed:
+
+- Confirm exact server-side error payload for insufficient ISK in all PI paths; edit submission, launches, and import/export currently use `NotEnoughMoney`.
+- Confirm tax rounding behavior: floor, round, or fractional ISK truncation.
+- Confirm whether export tax should use `attributeImportTaxMultiplier` like the decompiled V23 client `spaceportPin.py`, or `attributeExportTaxMultiplier` from dogma data.
+- Confirm whether submitted pin removals refund construction cost, or whether the client subtraction only cancels local unsubmitted edit cost.
+- Confirm whether link upgrades/builds have any ISK cost in this client version.
+- Confirm command center launch tax recipient behavior when a POCO exists in orbit.
+
+Tests:
+
+- `UserUpdateNetwork` debits non-command-center pin base prices and command-center upgrade costs - covered.
+- Command center placement consumes the inventory item but does not also charge its base price - covered.
+- Insufficient ISK rejects the edit and leaves colony state unchanged - covered.
+- Retried or replayed edit submissions do not double debit the wallet - covered.
+- Command center launch debits export tax, removes commodities, and creates launch details - covered.
+- Insufficient ISK on launch leaves commodities and launch state unchanged - covered.
+- `ImportExportWithPlanet` debits import and export tax and moves items atomically - covered for the dev-default customs path.
+- Stale customs office tax rate returns `TaxChanged` and moves nothing - covered.
+- Wallet journal entries are created with reference IDs `96`, `97`, and `98` - covered.
+- CPU, power, link bandwidth, route waypoint, capacity, and expedited transfer validations reject invalid edits before wallet debit.
+
+## Phase 8: PI Authority And POCO Polish
+
+Goal: make submitted PI network state trustworthy enough that the server, not the client, owns the colony rules.
+
+Current status:
+
+- Implemented a dry-run `UserUpdateNetwork` validation pass before wallet debit, so invalid edits do not charge ISK.
+- Implemented command-center CPU and power validation when a colony has a command pin.
+- Implemented ECU extractor-head CPU/power usage using dogma head attributes.
+- Implemented link CPU/power usage using client-style distance, per-kilometer, level, and modifier math.
+- Implemented route/link validation:
+  - route path length and max `MAX_WAYPOINTS = 5`
+  - linked pins must exist
+  - route path segments must have links
+  - link level must not exceed `LINK_MAX_UPGRADE = 10`
+  - aggregate route bandwidth must fit link logistical capacity
+- Implemented `UserTransferCommodities(path, commodities)` for expedited transfers.
+- Implemented expedited transfer source cooldowns by persisting the source storage pin's next transfer time in `lastRunTime`.
+- Implemented physical command-center launch containers as inventory-backed `Planetary Launch Container` space items containing the launched commodities.
+- `CmdWarpToStuff('launch', launchID)` now prefers the physical launch container entity and falls back to launch coordinates if the container is not spawned.
+- Implemented regression coverage that invalid CPU and invalid waypoint edits leave wallet and colony state unchanged.
+
+Server work:
+
+- Validate CPU/power for pin, command-center upgrade, extractor-head, and link edits - implemented.
+- Validate route waypoint limits and link path existence - implemented.
+- Validate link route bandwidth - implemented with route volume-per-hour approximation from client formulas.
+- Keep validation before wallet debit - implemented through dry-run edit preview.
+- Implement `UserTransferCommodities(path, commodities)` for expedited transfers - implemented.
+- Add expedited transfer cooldown/runtime validation - implemented for source storage cooldown, commodity availability, destination acceptance, path ownership, and link existence/bandwidth.
+- Add planet type restriction validation for pin placement if the client does not fully enforce it.
+- Add exact route producer/consumer validation:
+  - producer must produce routed commodity
+  - consumer must accept routed commodity
+  - storage-to-storage routing should be rejected
+- Add POCO ownership/access polish:
+  - route taxes to owner corporation wallet when real POCO ownership exists
+  - enforce standing/access rules if desired
+  - model physical POCO inventory/capacity instead of the current dev-default inventory path
+- Add optional physical launch containers in space if coordinate-only launches are not enough for pickup gameplay - implemented for command-center launches.
+
+Data to create:
+
+- Optional POCO/orbital registry ownership and access config.
+- Persisted expedited transfer cooldown fields on pins - implemented by reusing storage pin `lastRunTime`, matching the client model.
+- Physical launch container inventory records linked to launch IDs - implemented through launch `itemID` / `physicalContainerID`.
+
+Research/data still needed:
+
+- Exact client labels for some validation errors if we want perfect parity.
+- Exact producer/consumer route validation behavior for every processor/storage combination.
+- Whether we want planet type restrictions to be hard server authority or relaxed dev-server behavior.
+- How real POCO ownership should map to corporation wallets on this server.
+
+Tests:
+
+- CPU overuse rejects before wallet debit - covered.
+- Route with too many waypoints rejects before wallet debit - covered.
+- Link bandwidth overuse rejects before wallet debit.
+- Route missing link rejects before wallet debit.
+- Link upgrade over max level rejects before wallet debit.
+- Expedited transfer moves commodities, sets cooldown, and rejects early reuse - covered.
+- Command-center launch creates a physical launch container with launched commodities - covered.
+- POCO owner tax routing credits the correct corporation wallet once ownership is modeled.

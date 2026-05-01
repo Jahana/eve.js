@@ -17,8 +17,17 @@ const MAX_DISPLAY_QUALITY = 154;
 const LINK_TYPE_ID = 2280;
 const STATE_IDLE = 0;
 const STATE_ACTIVE = 1;
+const SECOND_TICKS = 10000000;
 const HOUR_TICKS = 60 * 60 * 10000000;
+const DAY_TICKS = 24n * 60n * 60n * 10000000n;
 const FILETIME_UNIX_EPOCH_OFFSET = 116444736000000000n;
+const MAX_SIMULATION_EVENTS = 20000;
+const COMMAND_CENTER_LAUNCH_CYCLE_TICKS = 60n * 10000000n;
+const PI_LAUNCH_ORBIT_DECAY_TICKS = 5n * DAY_TICKS;
+const PI_LAUNCH_CLEANUP_GRACE_TICKS = 30n * DAY_TICKS;
+const EXPEDITED_TRANSFER_MINIMUM_TICKS = 5 * 60 * 10000000;
+const MAX_ROUTE_WAYPOINTS = 5;
+const LINK_MAX_UPGRADE = 10;
 const RADIUS_DRILL_AREA_MIN = 0.01;
 const RADIUS_DRILL_AREA_MAX = 0.05;
 const RADIUS_DRILL_AREA_DIFF = RADIUS_DRILL_AREA_MAX - RADIUS_DRILL_AREA_MIN;
@@ -69,7 +78,12 @@ function normalizeState(rawState = {}) {
     changed = true;
   }
 
-  for (const key of ["resourcesByPlanetID", "coloniesByKey", "launchesByID"]) {
+  for (const key of [
+    "resourcesByPlanetID",
+    "coloniesByKey",
+    "launchesByID",
+    "acceptedNetworkEditsByKey",
+  ]) {
     if (!isPlainObject(state[key])) {
       state[key] = {};
       changed = true;
@@ -101,20 +115,31 @@ function readState(options = {}) {
 
   const { state, changed } = normalizeState(result.success ? result.data : {});
   if (changed && options.repair === true) {
-    database.write(TABLE_NAME, "/", state);
+    writeState(state);
   }
   return state;
 }
 
+function flushStateToDisk() {
+  const result = database.flushTableSync(TABLE_NAME);
+  if (!result.success) {
+    log.warn(
+      `[PlanetRuntimeStore] Failed to flush ${TABLE_NAME}: ${result.errorMsg || "FLUSH_ERROR"}`,
+    );
+  }
+  return result.success === true;
+}
+
 function writeState(state) {
   const { state: normalizedState } = normalizeState(state);
-  const result = database.write(TABLE_NAME, "/", normalizedState);
+  const result = database.write(TABLE_NAME, "/", normalizedState, { force: true });
   if (!result.success) {
     log.warn(
       `[PlanetRuntimeStore] Failed to write ${TABLE_NAME}: ${result.errorMsg || "WRITE_ERROR"}`,
     );
+    return false;
   }
-  return result.success === true;
+  return flushStateToDisk();
 }
 
 function normalizeInteger(value, fallback = 0) {
@@ -143,8 +168,74 @@ function currentFileTimeString() {
   return currentFileTime().toString();
 }
 
+function filetimeBigInt(value, fallback = currentFileTime()) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+
+  try {
+    if (typeof value === "bigint") {
+      return value;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return BigInt(Math.trunc(value));
+    }
+    if (typeof value === "string") {
+      return BigInt(value);
+    }
+  } catch (error) {
+    return fallback;
+  }
+
+  return fallback;
+}
+
 function colonyKey(planetID, ownerID) {
   return `${normalizeInteger(planetID, 0)}:${normalizeInteger(ownerID, 0)}`;
+}
+
+function getAcceptedNetworkEditBucket(state, key, options = {}) {
+  if (!isPlainObject(state.acceptedNetworkEditsByKey)) {
+    state.acceptedNetworkEditsByKey = {};
+  }
+  if (!isPlainObject(state.acceptedNetworkEditsByKey[key])) {
+    if (options.create !== true) {
+      return null;
+    }
+    state.acceptedNetworkEditsByKey[key] = {};
+  }
+  return state.acceptedNetworkEditsByKey[key];
+}
+
+function hasAcceptedNetworkEdit({
+  planetID,
+  ownerID,
+  editHash,
+} = {}) {
+  const normalizedPlanetID = normalizeInteger(planetID, 0);
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  if (normalizedPlanetID <= 0 || normalizedOwnerID <= 0 || !editHash) {
+    return false;
+  }
+
+  const state = readState({ repair: true });
+  const bucket = getAcceptedNetworkEditBucket(
+    state,
+    colonyKey(normalizedPlanetID, normalizedOwnerID),
+  );
+  return Boolean(bucket && bucket[String(editHash)]);
+}
+
+function markAcceptedNetworkEdit(state, key, editHash, details = {}) {
+  if (!editHash) {
+    return;
+  }
+  const bucket = getAcceptedNetworkEditBucket(state, key, { create: true });
+  bucket[String(editHash)] = {
+    editHash: String(editHash),
+    acceptedAt: new Date().toISOString(),
+    constructionCost: normalizeReal(details.constructionCost, 0),
+  };
 }
 
 function clamp(value, min, max) {
@@ -651,6 +742,14 @@ function collectUsedIDs(state, fieldName) {
       }
     }
   }
+  if (fieldName === "launchID") {
+    for (const [key, launch] of Object.entries(state.launchesByID || {})) {
+      const launchID = normalizeInteger((launch && launch.launchID) || key, 0);
+      if (launchID > 0) {
+        usedIDs.add(launchID);
+      }
+    }
+  }
   return usedIDs;
 }
 
@@ -691,7 +790,65 @@ function findPin(colony, pinID) {
 }
 
 function normalizeContents(contents) {
-  return isPlainObject(contents) ? { ...contents } : {};
+  if (!isPlainObject(contents)) {
+    return {};
+  }
+
+  const normalizedContents = {};
+  for (const [typeID, quantity] of Object.entries(contents)) {
+    const normalizedTypeID = normalizeInteger(typeID, 0);
+    const normalizedQuantity = normalizeInteger(quantity, 0);
+    if (normalizedTypeID > 0 && normalizedQuantity > 0) {
+      normalizedContents[String(normalizedTypeID)] = normalizedQuantity;
+    }
+  }
+  return normalizedContents;
+}
+
+function normalizeLaunchRecord(launch = {}) {
+  const launchID = normalizeInteger(launch.launchID ?? launch.itemID, 0);
+  return {
+    ...launch,
+    launchID,
+    itemID: normalizeInteger(launch.itemID ?? launchID, launchID),
+    ownerID: normalizeInteger(launch.ownerID, 0),
+    planetID: normalizeInteger(launch.planetID, 0),
+    solarSystemID: normalizeInteger(launch.solarSystemID, 0),
+    commandPinID: normalizeInteger(launch.commandPinID, 0),
+    launchTime: launch.launchTime ? String(launch.launchTime) : currentFileTimeString(),
+    x: normalizeReal(launch.x, 0),
+    y: normalizeReal(launch.y, 0),
+    z: normalizeReal(launch.z, 0),
+    contents: normalizeContents(launch.contents),
+    deleted: launch.deleted === true,
+    createdAt: launch.createdAt || new Date().toISOString(),
+    updatedAt: launch.updatedAt || launch.createdAt || new Date().toISOString(),
+  };
+}
+
+function isLaunchExpired(launch, nowFileTime = currentFileTime()) {
+  const normalizedLaunch = normalizeLaunchRecord(launch);
+  const launchTime = filetimeBigInt(normalizedLaunch.launchTime, nowFileTime);
+  return nowFileTime - launchTime >= PI_LAUNCH_ORBIT_DECAY_TICKS;
+}
+
+function isLaunchCleanupEligible(launch, nowFileTime = currentFileTime(), maxAgeTicks = null) {
+  const normalizedLaunch = normalizeLaunchRecord(launch);
+  const launchTime = filetimeBigInt(normalizedLaunch.launchTime, nowFileTime);
+  const cleanupAge = maxAgeTicks === null
+    ? PI_LAUNCH_ORBIT_DECAY_TICKS + PI_LAUNCH_CLEANUP_GRACE_TICKS
+    : BigInt(maxAgeTicks);
+  return nowFileTime - launchTime >= cleanupAge;
+}
+
+function summarizeContents(contents = {}) {
+  const normalizedContents = normalizeContents(contents);
+  return Object.entries(normalizedContents)
+    .map(([typeID, quantity]) => ({
+      typeID: normalizeInteger(typeID, 0),
+      quantity: normalizeInteger(quantity, 0),
+    }))
+    .sort((left, right) => left.typeID - right.typeID);
 }
 
 function normalizePin(pin = {}, ownerID = 0) {
@@ -760,6 +917,28 @@ function buildPin(pinID, typeID, ownerID, latitude, longitude) {
   }, ownerID);
 }
 
+function buildLaunchCoordinates(planetMeta = {}, launchID = 0) {
+  const position = isPlainObject(planetMeta.position) ? planetMeta.position : {};
+  const baseX = normalizeReal(position.x ?? planetMeta.x, 0);
+  const baseY = normalizeReal(position.y ?? planetMeta.y, 0);
+  const baseZ = normalizeReal(position.z ?? planetMeta.z, 0);
+  const radius = Math.max(0, normalizeReal(planetMeta.radius, 0));
+  const distance = Math.max(radius + 2500000, 10000000);
+  const seed = stableHash([
+    planetMeta.planetID,
+    planetMeta.ownerID,
+    launchID,
+    "planetary-launch",
+  ]);
+  const theta = hashRatio([seed, "theta"]) * Math.PI * 2;
+  const phi = Math.acos((hashRatio([seed, "phi"]) * 2) - 1);
+  return {
+    x: Math.round(baseX + (Math.sin(phi) * Math.cos(theta) * distance)),
+    y: Math.round(baseY + (Math.sin(phi) * Math.sin(theta) * distance)),
+    z: Math.round(baseZ + (Math.cos(phi) * distance)),
+  };
+}
+
 function normalizeColony(rawColony, context = {}) {
   const planetID = normalizeInteger(
     context.planetID ?? (rawColony && rawColony.planetID),
@@ -782,6 +961,7 @@ function normalizeColony(rawColony, context = {}) {
     context.planetTypeID ?? colony.planetTypeID ?? colony.typeID,
     0,
   );
+  colony.planetRadius = normalizeReal(context.planetRadius ?? colony.planetRadius, 0);
   colony.typeID = colony.planetTypeID;
   colony.level = normalizeInteger(colony.level ?? colony.commandCenterLevel, 0);
   colony.commandCenterLevel = colony.level;
@@ -819,6 +999,552 @@ function normalizeColony(rawColony, context = {}) {
   return colony;
 }
 
+function getPinEntityType(pin) {
+  return planetStaticData.getPinEntityType(pin && pin.typeID);
+}
+
+function isStorageEntityType(entityType) {
+  return entityType === "storage" || entityType === "spaceport" || entityType === "command";
+}
+
+function getTypeVolume(typeID) {
+  const type = planetStaticData.getType(typeID);
+  const volume = Number(type && type.volume);
+  return Number.isFinite(volume) && volume > 0 ? volume : 0;
+}
+
+function getPinCapacity(pin) {
+  if (!isStorageEntityType(getPinEntityType(pin))) {
+    return 0;
+  }
+
+  const info = planetStaticData.getPITypeInfo(pin && pin.typeID);
+  const capacity = Number(info && info.capacity);
+  return Number.isFinite(capacity) && capacity >= 0 ? capacity : Infinity;
+}
+
+function getPinUsedVolume(pin) {
+  const contents = normalizeContents(pin && pin.contents);
+  return Object.entries(contents).reduce((total, [typeID, quantity]) => (
+    total + (getTypeVolume(typeID) * quantity)
+  ), 0);
+}
+
+function getPinFreeSpace(pin) {
+  const capacity = getPinCapacity(pin);
+  if (capacity === Infinity) {
+    return Infinity;
+  }
+  return Math.max(0, capacity - getPinUsedVolume(pin));
+}
+
+function getPinCycleTime(pin) {
+  const entityType = getPinEntityType(pin);
+  if (entityType === "ecu") {
+    return Math.max(0, normalizeInteger(pin && pin.cycleTime, 0));
+  }
+  if (entityType === "process") {
+    const schematic = planetStaticData.getSchematicByID(pin && pin.schematicID);
+    return schematic ? Math.max(1, schematic.cycleTime * SECOND_TICKS) : 0;
+  }
+  return 0;
+}
+
+function getContentsQuantity(pin, typeID) {
+  const key = String(normalizeInteger(typeID, 0));
+  return normalizeInteger(pin && pin.contents && pin.contents[key], 0);
+}
+
+function setContentsQuantity(pin, typeID, quantity) {
+  if (!pin) {
+    return;
+  }
+  const key = String(normalizeInteger(typeID, 0));
+  const normalizedQuantity = normalizeInteger(quantity, 0);
+  pin.contents = normalizeContents(pin.contents);
+  if (normalizedQuantity > 0) {
+    pin.contents[key] = normalizedQuantity;
+  } else {
+    delete pin.contents[key];
+  }
+}
+
+function getProcessSchematic(pin) {
+  if (getPinEntityType(pin) !== "process") {
+    return null;
+  }
+  return planetStaticData.getSchematicByID(pin && pin.schematicID);
+}
+
+function getProcessDemand(pin, typeID) {
+  const schematic = getProcessSchematic(pin);
+  const normalizedTypeID = normalizeInteger(typeID, 0);
+  return schematic
+    ? schematic.inputs.find((entry) => entry.typeID === normalizedTypeID) || null
+    : null;
+}
+
+function getProcessCycleTime(pin) {
+  const schematic = getProcessSchematic(pin);
+  return schematic ? Math.max(1, schematic.cycleTime * SECOND_TICKS) : 0;
+}
+
+function getAcceptableQuantity(pin, typeID, desiredQuantity) {
+  const desired = normalizeInteger(desiredQuantity, 0);
+  if (!pin || desired <= 0) {
+    return 0;
+  }
+
+  const entityType = getPinEntityType(pin);
+  if (entityType === "process") {
+    const demand = getProcessDemand(pin, typeID);
+    if (!demand) {
+      return 0;
+    }
+    return Math.min(
+      desired,
+      Math.max(0, demand.quantity - getContentsQuantity(pin, typeID)),
+    );
+  }
+
+  if (!isStorageEntityType(entityType)) {
+    return 0;
+  }
+
+  const volume = getTypeVolume(typeID);
+  if (volume <= 0) {
+    return desired;
+  }
+  const freeSpace = getPinFreeSpace(pin);
+  if (freeSpace === Infinity) {
+    return desired;
+  }
+  return Math.min(desired, Math.max(0, Math.floor((freeSpace + 1e-9) / volume)));
+}
+
+function addCommodityToPin(pin, typeID, quantity) {
+  const acceptedQuantity = getAcceptableQuantity(pin, typeID, quantity);
+  if (acceptedQuantity <= 0) {
+    return 0;
+  }
+
+  setContentsQuantity(
+    pin,
+    typeID,
+    getContentsQuantity(pin, typeID) + acceptedQuantity,
+  );
+  return acceptedQuantity;
+}
+
+function removeCommodityFromPin(pin, typeID, quantity) {
+  const removedQuantity = Math.min(
+    getContentsQuantity(pin, typeID),
+    Math.max(0, normalizeInteger(quantity, 0)),
+  );
+  if (removedQuantity <= 0) {
+    return 0;
+  }
+
+  setContentsQuantity(
+    pin,
+    typeID,
+    getContentsQuantity(pin, typeID) - removedQuantity,
+  );
+  return removedQuantity;
+}
+
+function hasEnoughProcessInputs(pin) {
+  const schematic = getProcessSchematic(pin);
+  return Boolean(
+    schematic &&
+    schematic.inputs.every((input) => getContentsQuantity(pin, input.typeID) >= input.quantity),
+  );
+}
+
+function consumeProcessInputs(pin) {
+  const schematic = getProcessSchematic(pin);
+  if (!schematic) {
+    return false;
+  }
+  if (!hasEnoughProcessInputs(pin)) {
+    return false;
+  }
+
+  for (const input of schematic.inputs) {
+    removeCommodityFromPin(pin, input.typeID, input.quantity);
+  }
+  return true;
+}
+
+function activateProcessPin(pin, runTime) {
+  if (!pin || getPinEntityType(pin) !== "process" || pin.state === STATE_ACTIVE) {
+    return false;
+  }
+  if (!consumeProcessInputs(pin)) {
+    return false;
+  }
+
+  pin.state = STATE_ACTIVE;
+  pin.hasReceivedInputs = true;
+  pin.receivedInputsLastCycle = false;
+  pin.lastRunTime = runTime.toString();
+  return true;
+}
+
+function runProcessCycle(pin, runTime) {
+  const schematic = getProcessSchematic(pin);
+  if (!schematic || pin.state !== STATE_ACTIVE) {
+    return {};
+  }
+
+  const products = {};
+  for (const output of schematic.outputs) {
+    products[String(output.typeID)] = (products[String(output.typeID)] || 0) + output.quantity;
+  }
+
+  pin.lastRunTime = runTime.toString();
+  pin.receivedInputsLastCycle = pin.hasReceivedInputs === true;
+  if (consumeProcessInputs(pin)) {
+    pin.state = STATE_ACTIVE;
+    pin.hasReceivedInputs = true;
+  } else {
+    pin.state = STATE_IDLE;
+    pin.hasReceivedInputs = false;
+  }
+  return products;
+}
+
+function runEcuCycle(pin, runTime) {
+  if (
+    !pin ||
+    getPinEntityType(pin) !== "ecu" ||
+    pin.state !== STATE_ACTIVE ||
+    !pin.programType ||
+    normalizeInteger(pin.qtyPerCycle, 0) <= 0
+  ) {
+    return {};
+  }
+
+  const expiryTime = filetimeBigInt(pin.expiryTime, null);
+  if (expiryTime !== null && runTime > expiryTime) {
+    pin.state = STATE_IDLE;
+    return {};
+  }
+
+  pin.lastRunTime = runTime.toString();
+  if (expiryTime !== null && runTime >= expiryTime) {
+    pin.state = STATE_IDLE;
+  }
+
+  return {
+    [String(pin.programType)]: normalizeInteger(pin.qtyPerCycle, 0),
+  };
+}
+
+function getRouteSourceID(route) {
+  return Array.isArray(route && route.path) && route.path.length > 0
+    ? normalizeInteger(route.path[0], 0)
+    : 0;
+}
+
+function getRouteDestinationID(route) {
+  return Array.isArray(route && route.path) && route.path.length > 0
+    ? normalizeInteger(route.path[route.path.length - 1], 0)
+    : 0;
+}
+
+function sortRoutesForOutput(colony, routes) {
+  return [...routes].sort((left, right) => {
+    const leftDestinationType = getPinEntityType(findPin(colony, getRouteDestinationID(left)));
+    const rightDestinationType = getPinEntityType(findPin(colony, getRouteDestinationID(right)));
+    const leftPriority = leftDestinationType === "process" ? 0 : 1;
+    const rightPriority = rightDestinationType === "process" ? 0 : 1;
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+    return normalizeInteger(left.routeID, 0) - normalizeInteger(right.routeID, 0);
+  });
+}
+
+function getSourceRoutes(colony, sourcePinID, commodityTypeID = 0) {
+  const normalizedSourcePinID = normalizeInteger(sourcePinID, 0);
+  const normalizedCommodityTypeID = normalizeInteger(commodityTypeID, 0);
+  return sortRoutesForOutput(
+    colony,
+    (Array.isArray(colony.routes) ? colony.routes : []).filter((route) => (
+      getRouteSourceID(route) === normalizedSourcePinID &&
+      normalizeInteger(route.commodityQuantity, 0) > 0 &&
+      (
+        normalizedCommodityTypeID <= 0 ||
+        normalizeInteger(route.commodityTypeID, 0) === normalizedCommodityTypeID
+      )
+    )),
+  );
+}
+
+function getDestinationRoutes(colony, destinationPinID, commodityTypeID = 0) {
+  const normalizedDestinationPinID = normalizeInteger(destinationPinID, 0);
+  const normalizedCommodityTypeID = normalizeInteger(commodityTypeID, 0);
+  return (Array.isArray(colony.routes) ? colony.routes : [])
+    .filter((route) => (
+      getRouteDestinationID(route) === normalizedDestinationPinID &&
+      normalizeInteger(route.commodityQuantity, 0) > 0 &&
+      (
+        normalizedCommodityTypeID <= 0 ||
+        normalizeInteger(route.commodityTypeID, 0) === normalizedCommodityTypeID
+      )
+    ))
+    .sort((left, right) => normalizeInteger(left.routeID, 0) - normalizeInteger(right.routeID, 0));
+}
+
+function moveCommodityOverRoute(colony, route, sourcePin, typeID, maxQuantity, options = {}) {
+  const destinationPin = findPin(colony, getRouteDestinationID(route));
+  if (!destinationPin) {
+    return { movedQuantity: 0, destinationPin: null };
+  }
+
+  const routeQuantity = normalizeInteger(route.commodityQuantity, 0);
+  let quantity = Math.min(normalizeInteger(maxQuantity, 0), routeQuantity);
+  if (options.consumeSource === true) {
+    quantity = Math.min(quantity, getContentsQuantity(sourcePin, typeID));
+  }
+  if (quantity <= 0) {
+    return { movedQuantity: 0, destinationPin };
+  }
+
+  const movedQuantity = addCommodityToPin(destinationPin, typeID, quantity);
+  if (movedQuantity > 0 && options.consumeSource === true) {
+    removeCommodityFromPin(sourcePin, typeID, movedQuantity);
+  }
+  return { movedQuantity, destinationPin };
+}
+
+function routeCommodityOutput(colony, sourcePin, commodities = {}, options = {}) {
+  if (!sourcePin || !isPlainObject(commodities) || normalizeInteger(options.depth, 0) > 8) {
+    return 0;
+  }
+
+  const sourceConsumes = options.consumeSource === true;
+  let movedTotal = 0;
+  for (const [typeIDKey, quantity] of Object.entries(normalizeContents(commodities))) {
+    const typeID = normalizeInteger(typeIDKey, 0);
+    let remainingQuantity = sourceConsumes
+      ? Math.min(quantity, getContentsQuantity(sourcePin, typeID))
+      : quantity;
+
+    for (const route of getSourceRoutes(colony, sourcePin.pinID, typeID)) {
+      if (remainingQuantity <= 0) {
+        break;
+      }
+
+      const { movedQuantity, destinationPin } = moveCommodityOverRoute(
+        colony,
+        route,
+        sourcePin,
+        typeID,
+        remainingQuantity,
+        { consumeSource: sourceConsumes },
+      );
+      if (movedQuantity <= 0) {
+        continue;
+      }
+
+      movedTotal += movedQuantity;
+      remainingQuantity -= movedQuantity;
+
+      if (
+        destinationPin &&
+        isStorageEntityType(getPinEntityType(destinationPin)) &&
+        !isStorageEntityType(getPinEntityType(sourcePin))
+      ) {
+        routeCommodityOutput(
+          colony,
+          destinationPin,
+          { [String(typeID)]: getContentsQuantity(destinationPin, typeID) },
+          { consumeSource: true, depth: normalizeInteger(options.depth, 0) + 1 },
+        );
+      }
+    }
+  }
+  return movedTotal;
+}
+
+function routeCommodityInput(colony, processPin) {
+  const schematic = getProcessSchematic(processPin);
+  if (!schematic) {
+    return 0;
+  }
+
+  let movedTotal = 0;
+  for (const input of schematic.inputs) {
+    let missingQuantity = Math.max(
+      0,
+      input.quantity - getContentsQuantity(processPin, input.typeID),
+    );
+    if (missingQuantity <= 0) {
+      continue;
+    }
+
+    for (const route of getDestinationRoutes(colony, processPin.pinID, input.typeID)) {
+      if (missingQuantity <= 0) {
+        break;
+      }
+
+      const sourcePin = findPin(colony, getRouteSourceID(route));
+      if (!sourcePin || !isStorageEntityType(getPinEntityType(sourcePin))) {
+        continue;
+      }
+
+      const { movedQuantity } = moveCommodityOverRoute(
+        colony,
+        route,
+        sourcePin,
+        input.typeID,
+        missingQuantity,
+        { consumeSource: true },
+      );
+      movedTotal += movedQuantity;
+      missingQuantity -= movedQuantity;
+    }
+  }
+  return movedTotal;
+}
+
+function primeReadyProcessors(colony, runTime) {
+  let changed = false;
+  for (const pin of Array.isArray(colony.pins) ? colony.pins : []) {
+    if (getPinEntityType(pin) !== "process" || pin.state === STATE_ACTIVE) {
+      continue;
+    }
+
+    if (routeCommodityInput(colony, pin) > 0) {
+      changed = true;
+    }
+    if (activateProcessPin(pin, runTime)) {
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function getNextPinRunTime(pin, targetTime) {
+  const entityType = getPinEntityType(pin);
+  if (entityType === "ecu") {
+    if (
+      pin.state !== STATE_ACTIVE ||
+      !pin.programType ||
+      normalizeInteger(pin.cycleTime, 0) <= 0 ||
+      normalizeInteger(pin.qtyPerCycle, 0) <= 0
+    ) {
+      return null;
+    }
+
+    const nextRunTime = filetimeBigInt(pin.lastRunTime, targetTime) +
+      BigInt(normalizeInteger(pin.cycleTime, 0));
+    const expiryTime = filetimeBigInt(pin.expiryTime, null);
+    if (expiryTime !== null && nextRunTime > expiryTime) {
+      return null;
+    }
+    return nextRunTime <= targetTime ? nextRunTime : null;
+  }
+
+  if (entityType === "process" && pin.state === STATE_ACTIVE) {
+    const cycleTime = getProcessCycleTime(pin);
+    if (cycleTime <= 0) {
+      return null;
+    }
+    const nextRunTime = filetimeBigInt(pin.lastRunTime, targetTime) + BigInt(cycleTime);
+    return nextRunTime <= targetTime ? nextRunTime : null;
+  }
+
+  return null;
+}
+
+function getNextSimulationEvent(colony, targetTime) {
+  let nextEvent = null;
+  for (const pin of Array.isArray(colony.pins) ? colony.pins : []) {
+    const nextRunTime = getNextPinRunTime(pin, targetTime);
+    if (nextRunTime === null) {
+      continue;
+    }
+    if (
+      !nextEvent ||
+      nextRunTime < nextEvent.runTime ||
+      (
+        nextRunTime === nextEvent.runTime &&
+        normalizeInteger(pin.pinID, 0) < normalizeInteger(nextEvent.pinID, 0)
+      )
+    ) {
+      nextEvent = {
+        pinID: normalizeInteger(pin.pinID, 0),
+        runTime: nextRunTime,
+      };
+    }
+  }
+  return nextEvent;
+}
+
+function runColonySimulation(rawColony, targetFileTime = currentFileTimeString(), context = {}) {
+  const colony = normalizeColony(rawColony, context);
+  const targetTime = filetimeBigInt(targetFileTime, currentFileTime());
+  let simulationTime = filetimeBigInt(colony.currentSimTime, targetTime);
+  if (targetTime <= simulationTime) {
+    return { colony, changed: false };
+  }
+
+  let changed = primeReadyProcessors(colony, simulationTime);
+  let eventCount = 0;
+  while (eventCount < MAX_SIMULATION_EVENTS) {
+    const event = getNextSimulationEvent(colony, targetTime);
+    if (!event) {
+      break;
+    }
+
+    simulationTime = event.runTime;
+    colony.currentSimTime = simulationTime.toString();
+    const pin = findPin(colony, event.pinID);
+    if (!pin) {
+      break;
+    }
+
+    const entityType = getPinEntityType(pin);
+    let products = {};
+    if (entityType === "ecu") {
+      products = runEcuCycle(pin, simulationTime);
+    } else if (entityType === "process") {
+      products = runProcessCycle(pin, simulationTime);
+      routeCommodityInput(colony, pin);
+      activateProcessPin(pin, simulationTime);
+    }
+
+    if (Object.keys(products).length > 0) {
+      routeCommodityOutput(colony, pin, products);
+    }
+    primeReadyProcessors(colony, simulationTime);
+    changed = true;
+    eventCount += 1;
+  }
+
+  if (eventCount >= MAX_SIMULATION_EVENTS) {
+    log.warn(
+      `[PlanetRuntimeStore] PI simulation event cap reached planetID=${colony.planetID} ownerID=${colony.ownerID}`,
+    );
+  }
+
+  const targetTimeString = targetTime.toString();
+  if (colony.currentSimTime !== targetTimeString) {
+    colony.currentSimTime = targetTimeString;
+    changed = true;
+  }
+  if (changed) {
+    colony.updatedAt = new Date().toISOString();
+  }
+  return {
+    colony: normalizeColony(colony, context),
+    changed,
+  };
+}
+
 function sortEndpoints(endpoint1, endpoint2) {
   const left = normalizeInteger(endpoint1, 0);
   const right = normalizeInteger(endpoint2, 0);
@@ -827,6 +1553,242 @@ function sortEndpoints(endpoint1, endpoint2) {
 
 function linkKey(endpoint1, endpoint2) {
   return sortEndpoints(endpoint1, endpoint2).join(":");
+}
+
+function getLinkByEndpoints(colony, endpoint1, endpoint2) {
+  const key = linkKey(endpoint1, endpoint2);
+  return (Array.isArray(colony.links) ? colony.links : [])
+    .find((link) => linkKey(link.endpoint1, link.endpoint2) === key) || null;
+}
+
+function getPinDistanceMeters(pinA, pinB, planetRadius = 0) {
+  const radius = Math.max(0, normalizeReal(planetRadius, 0));
+  if (!pinA || !pinB || radius <= 0) {
+    return 0;
+  }
+  return sphericalDistance(
+    normalizeSurfacePoint(pinA.latitude, pinA.longitude),
+    normalizeSurfacePoint(pinB.latitude, pinB.longitude),
+  ) * radius;
+}
+
+function getLinkCpuUsage(link, colony, context = {}) {
+  const params = planetStaticData.getUsageParametersForLinkType(link && link.typeID);
+  const pinA = findPin(colony, link && link.endpoint1);
+  const pinB = findPin(colony, link && link.endpoint2);
+  const length = getPinDistanceMeters(pinA, pinB, context.planetRadius);
+  const level = Math.max(0, normalizeInteger(link && link.level, 0));
+  return params.baseCpuUsage +
+    Math.ceil(params.cpuUsagePerKm * (length / 1000) * ((level + 1) ** params.cpuUsageLevelModifier));
+}
+
+function getLinkPowerUsage(link, colony, context = {}) {
+  const params = planetStaticData.getUsageParametersForLinkType(link && link.typeID);
+  const pinA = findPin(colony, link && link.endpoint1);
+  const pinB = findPin(colony, link && link.endpoint2);
+  const length = getPinDistanceMeters(pinA, pinB, context.planetRadius);
+  const level = Math.max(0, normalizeInteger(link && link.level, 0));
+  return params.basePowerUsage +
+    Math.ceil(params.powerUsagePerKm * (length / 1000) * ((level + 1) ** params.powerUsageLevelModifier));
+}
+
+function getPinCpuPower(pin) {
+  const typeUsage = planetStaticData.getCPUAndPowerForPinType(pin && pin.typeID);
+  const entityType = getPinEntityType(pin);
+  if (entityType !== "ecu") {
+    return {
+      cpuUsage: typeUsage.cpuUsage,
+      powerUsage: typeUsage.powerUsage,
+    };
+  }
+
+  const headCount = Array.isArray(pin.heads) ? pin.heads.length : 0;
+  return {
+    cpuUsage: typeUsage.cpuUsage +
+      Math.max(0, planetStaticData.getTypeAttribute(
+        pin.typeID,
+        planetStaticData.ATTRIBUTE.EXTRACTOR_HEAD_CPU,
+        0,
+      )) * headCount,
+    powerUsage: typeUsage.powerUsage +
+      Math.max(0, planetStaticData.getTypeAttribute(
+        pin.typeID,
+        planetStaticData.ATTRIBUTE.EXTRACTOR_HEAD_POWER,
+        0,
+      )) * headCount,
+  };
+}
+
+function getColonyCpuPowerStats(colony, context = {}) {
+  const level = clamp(normalizeInteger(colony && colony.level, 0), 0, 5);
+  const commandPin = (Array.isArray(colony.pins) ? colony.pins : [])
+    .find((pin) => getPinEntityType(pin) === "command") || null;
+  const commandInfo = planetStaticData.getCommandCenterInfo(level) || {};
+  const stats = {
+    hasCommandPin: Boolean(commandPin),
+    cpuSupply: commandPin ? normalizeInteger(commandInfo.cpuOutput, 0) : 0,
+    powerSupply: commandPin ? normalizeInteger(commandInfo.powerOutput, 0) : 0,
+    cpuUsage: 0,
+    powerUsage: 0,
+  };
+
+  for (const pin of Array.isArray(colony.pins) ? colony.pins : []) {
+    const entityType = getPinEntityType(pin);
+    if (entityType === "command") {
+      continue;
+    }
+    const usage = getPinCpuPower(pin);
+    stats.cpuUsage += usage.cpuUsage;
+    stats.powerUsage += usage.powerUsage;
+  }
+
+  for (const link of Array.isArray(colony.links) ? colony.links : []) {
+    stats.cpuUsage += getLinkCpuUsage(link, colony, context);
+    stats.powerUsage += getLinkPowerUsage(link, colony, context);
+  }
+
+  stats.cpuUsage = Math.ceil(stats.cpuUsage);
+  stats.powerUsage = Math.ceil(stats.powerUsage);
+  return stats;
+}
+
+function getRouteCycleTime(colony, route) {
+  const path = Array.isArray(route && route.path) ? route.path : [];
+  const sourcePin = findPin(colony, path[0]);
+  const destinationPin = findPin(colony, path[path.length - 1]);
+  const sourceCycleTime = getPinCycleTime(sourcePin);
+  const destinationCycleTime = getPinCycleTime(destinationPin);
+  if (sourceCycleTime > 0 && getPinEntityType(sourcePin) !== "storage") {
+    return sourceCycleTime;
+  }
+  if (destinationCycleTime > 0) {
+    return destinationCycleTime;
+  }
+  return Math.max(sourceCycleTime, destinationCycleTime);
+}
+
+function getRouteBandwidthUsage(colony, route) {
+  const typeID = normalizeInteger(route && route.commodityTypeID, 0);
+  const quantity = normalizeInteger(route && route.commodityQuantity, 0);
+  const volumePerCycle = getTypeVolume(typeID) * quantity;
+  const cycleTime = getRouteCycleTime(colony, route);
+  if (cycleTime > 0) {
+    return volumePerCycle * (HOUR_TICKS / cycleTime);
+  }
+  return volumePerCycle;
+}
+
+function getLinkBandwidthCapacity(link) {
+  const params = planetStaticData.getUsageParametersForLinkType(link && link.typeID);
+  const level = Math.max(0, normalizeInteger(link && link.level, 0));
+  return Math.max(0, Number(params.logisticalCapacity) || 0) * (2 ** level);
+}
+
+function getCommodityTotalVolume(commodities = {}) {
+  return Object.entries(normalizeContents(commodities)).reduce(
+    (total, [typeID, quantity]) => total + (getTypeVolume(typeID) * quantity),
+    0,
+  );
+}
+
+function getExpeditedTransferTimeTicks(linkBandwidth, commodities = {}) {
+  const bandwidth = Math.max(0, Number(linkBandwidth) || 0);
+  if (!(bandwidth > 0)) {
+    return EXPEDITED_TRANSFER_MINIMUM_TICKS;
+  }
+  const commodityVolume = getCommodityTotalVolume(commodities);
+  return Math.ceil(Math.max(
+    EXPEDITED_TRANSFER_MINIMUM_TICKS,
+    (commodityVolume / bandwidth) * HOUR_TICKS,
+  ));
+}
+
+function normalizeTransferPath(path = []) {
+  const unwrappedPath = unwrapMarshalValue(path);
+  return (Array.isArray(unwrappedPath) ? unwrappedPath : [])
+    .map((pinID) => normalizeInteger(unwrapMarshalValue(pinID), 0))
+    .filter((pinID) => pinID > 0);
+}
+
+function getMinimumLinkBandwidthForPath(colony, path = []) {
+  let minBandwidth = null;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const link = getLinkByEndpoints(colony, path[index], path[index + 1]);
+    if (!link) {
+      throw new Error("RouteFailedValidationLinkDoesNotExist");
+    }
+    const bandwidth = getLinkBandwidthCapacity(link);
+    if (minBandwidth === null || bandwidth < minBandwidth) {
+      minBandwidth = bandwidth;
+    }
+  }
+  if (minBandwidth === null || minBandwidth < 0) {
+    throw new Error("RouteFailedValidationNoBandwidthAvailable");
+  }
+  return minBandwidth;
+}
+
+function validateColonyRoutesAndLinks(colony) {
+  for (const link of Array.isArray(colony.links) ? colony.links : []) {
+    if (normalizeInteger(link.level, 0) > LINK_MAX_UPGRADE) {
+      throw new Error("CannotUpgradeLinkTooHigh");
+    }
+    ensurePinsExist(colony, [link.endpoint1, link.endpoint2]);
+  }
+
+  const bandwidthByLinkKey = new Map();
+  for (const route of Array.isArray(colony.routes) ? colony.routes : []) {
+    const path = Array.isArray(route.path) ? route.path : [];
+    if (path.length < 2) {
+      throw new Error("CreateRouteTooShort");
+    }
+    if (path.length - 2 > MAX_ROUTE_WAYPOINTS) {
+      throw new Error("CannotRouteTooManyWaypoints");
+    }
+    ensurePinsExist(colony, path);
+
+    const bandwidthUsage = getRouteBandwidthUsage(colony, route);
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const previousPinID = path[index];
+      const nextPinID = path[index + 1];
+      const link = getLinkByEndpoints(colony, previousPinID, nextPinID);
+      if (!link) {
+        throw new Error("RouteFailedValidationLinkDoesNotExist");
+      }
+      const key = linkKey(previousPinID, nextPinID);
+      bandwidthByLinkKey.set(
+        key,
+        (bandwidthByLinkKey.get(key) || 0) + bandwidthUsage,
+      );
+    }
+  }
+
+  for (const [key, bandwidthUsage] of bandwidthByLinkKey.entries()) {
+    const link = (Array.isArray(colony.links) ? colony.links : [])
+      .find((candidate) => linkKey(candidate.endpoint1, candidate.endpoint2) === key);
+    if (link && bandwidthUsage > getLinkBandwidthCapacity(link) + 1e-9) {
+      throw new Error("RouteFailedValidationCannotRouteCommodities");
+    }
+  }
+}
+
+function validateColonyCpuPower(colony, context = {}) {
+  const stats = getColonyCpuPowerStats(colony, context);
+  if (!stats.hasCommandPin) {
+    return stats;
+  }
+  if (stats.cpuUsage > stats.cpuSupply) {
+    throw new Error("CannotAddToColonyCPUUsageExceeded");
+  }
+  if (stats.powerUsage > stats.powerSupply) {
+    throw new Error("CannotAddToColonyPowerUsageExceeded");
+  }
+  return stats;
+}
+
+function validateColonyNetwork(colony, context = {}) {
+  validateColonyRoutesAndLinks(colony);
+  return validateColonyCpuPower(colony, context);
 }
 
 function removeRoutesTouchingPin(colony, pinID) {
@@ -1233,8 +2195,12 @@ function applyUserUpdateNetwork({
   ownerID,
   solarSystemID = 0,
   planetTypeID = 0,
+  planetRadius = 0,
   serializedChanges = [],
   commands = null,
+  editHash = null,
+  constructionCost = 0,
+  dryRun = false,
 } = {}) {
   const normalizedPlanetID = normalizeInteger(planetID, 0);
   const normalizedOwnerID = normalizeInteger(ownerID, 0);
@@ -1243,14 +2209,30 @@ function applyUserUpdateNetwork({
   }
 
   const commandStream = normalizeCommandStream(commands || serializedChanges);
-  const state = readState({ repair: true });
+  const persistedState = readState({ repair: true });
+  const state = dryRun ? cloneJson(persistedState) : persistedState;
   const key = colonyKey(normalizedPlanetID, normalizedOwnerID);
-  const colony = normalizeColony(state.coloniesByKey[key], {
+  if (!dryRun && editHash) {
+    const acceptedBucket = getAcceptedNetworkEditBucket(state, key);
+    if (acceptedBucket && acceptedBucket[String(editHash)] && state.coloniesByKey[key]) {
+      return normalizeColony(state.coloniesByKey[key], {
+        planetID: normalizedPlanetID,
+        ownerID: normalizedOwnerID,
+        solarSystemID,
+        planetTypeID,
+        planetRadius,
+      });
+    }
+  }
+  const simulationResult = runColonySimulation(state.coloniesByKey[key], currentFileTimeString(), {
     planetID: normalizedPlanetID,
     ownerID: normalizedOwnerID,
     solarSystemID,
     planetTypeID,
+    planetRadius,
   });
+  const colony = simulationResult.colony;
+  colony.planetRadius = normalizeReal(planetRadius, normalizeReal(colony.planetRadius, 0));
   const idMap = new Map();
   const usedPinIDs = collectUsedIDs(state, "pinID");
   const usedRouteIDs = collectUsedIDs(state, "routeID");
@@ -1440,6 +2422,162 @@ function applyUserUpdateNetwork({
 
   colony.currentSimTime = currentFileTimeString();
   colony.updatedAt = new Date().toISOString();
+  validateColonyNetwork(colony, { planetRadius });
+  state.coloniesByKey[key] = normalizeColony(colony, {
+    planetID: normalizedPlanetID,
+    ownerID: normalizedOwnerID,
+    solarSystemID,
+    planetTypeID,
+    planetRadius,
+  });
+  if (dryRun) {
+    return state.coloniesByKey[key];
+  }
+  markAcceptedNetworkEdit(state, key, editHash, { constructionCost });
+  writeState(state);
+  return state.coloniesByKey[key];
+}
+
+function previewUserUpdateNetwork(options = {}) {
+  return applyUserUpdateNetwork({
+    ...options,
+    dryRun: true,
+  });
+}
+
+function prepareLaunchCommodities({
+  planetID,
+  ownerID,
+  solarSystemID = 0,
+  planetTypeID = 0,
+  commandPinID,
+  commodities = {},
+  planetMeta = {},
+} = {}) {
+  const normalizedPlanetID = normalizeInteger(planetID, 0);
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  const normalizedCommandPinID = normalizeInteger(commandPinID, 0);
+  if (normalizedPlanetID <= 0 || normalizedOwnerID <= 0 || normalizedCommandPinID <= 0) {
+    return { success: false, errorMsg: "CannotLaunchWithoutColony" };
+  }
+
+  const commoditiesToLaunch = normalizeContents(commodities);
+  if (Object.keys(commoditiesToLaunch).length < 1) {
+    return { success: false, errorMsg: "PleaseSelectCommoditiesToLaunch" };
+  }
+
+  const state = readState({ repair: true });
+  const key = colonyKey(normalizedPlanetID, normalizedOwnerID);
+  if (!state.coloniesByKey[key]) {
+    return { success: false, errorMsg: "CannotLaunchWithoutColony" };
+  }
+
+  const launchTime = currentFileTimeString();
+  const simulationResult = runColonySimulation(state.coloniesByKey[key], launchTime, {
+    planetID: normalizedPlanetID,
+    ownerID: normalizedOwnerID,
+    solarSystemID,
+    planetTypeID,
+  });
+  const colony = simulationResult.colony;
+  const commandPin = findPin(colony, normalizedCommandPinID);
+  if (!commandPin || getPinEntityType(commandPin) !== "command") {
+    return { success: false, errorMsg: "CanOnlyLaunchFromCommandCenters" };
+  }
+
+  const lastLaunchTime = filetimeBigInt(commandPin.lastLaunchTime, 0n);
+  const currentLaunchTime = filetimeBigInt(launchTime, currentFileTime());
+  if (lastLaunchTime > 0n && lastLaunchTime + COMMAND_CENTER_LAUNCH_CYCLE_TICKS > currentLaunchTime) {
+    return { success: false, errorMsg: "CannotLaunchCommandPinNotReady" };
+  }
+
+  for (const [typeID, quantity] of Object.entries(commoditiesToLaunch)) {
+    if (getContentsQuantity(commandPin, typeID) < quantity) {
+      return { success: false, errorMsg: "CannotLaunchCommoditiesNotFound" };
+    }
+  }
+
+  return {
+    success: true,
+    state,
+    key,
+    colony,
+    commandPin,
+    launchTime,
+    commoditiesToLaunch,
+  };
+}
+
+function previewLaunchCommodities(options = {}) {
+  const result = prepareLaunchCommodities(options);
+  if (!result.success) {
+    return result;
+  }
+  return {
+    success: true,
+    commandPin: { ...result.commandPin },
+    commoditiesToLaunch: { ...result.commoditiesToLaunch },
+    launchTime: result.launchTime,
+  };
+}
+
+function launchCommodities(options = {}) {
+  const {
+    planetID,
+    ownerID,
+    solarSystemID = 0,
+    planetTypeID = 0,
+    commandPinID,
+    planetMeta = {},
+  } = options;
+  const normalizedPlanetID = normalizeInteger(planetID, 0);
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  const normalizedCommandPinID = normalizeInteger(commandPinID, 0);
+  const result = prepareLaunchCommodities(options);
+  if (!result.success) {
+    return result;
+  }
+
+  const {
+    state,
+    key,
+    colony,
+    commandPin,
+    launchTime,
+    commoditiesToLaunch,
+  } = result;
+
+  for (const [typeID, quantity] of Object.entries(commoditiesToLaunch)) {
+    removeCommodityFromPin(commandPin, typeID, quantity);
+  }
+  commandPin.lastLaunchTime = launchTime;
+
+  const launchID = allocateNextID(state, "launchID", collectUsedIDs(state, "launchID"));
+  const coordinates = buildLaunchCoordinates({
+    ...planetMeta,
+    planetID: normalizedPlanetID,
+    ownerID: normalizedOwnerID,
+    solarSystemID,
+    planetTypeID,
+  }, launchID);
+  const launch = normalizeLaunchRecord({
+    launchID,
+    itemID: launchID,
+    ownerID: normalizedOwnerID,
+    planetID: normalizedPlanetID,
+    solarSystemID: normalizeInteger(solarSystemID, 0),
+    commandPinID: normalizedCommandPinID,
+    launchTime,
+    x: coordinates.x,
+    y: coordinates.y,
+    z: coordinates.z,
+    contents: commoditiesToLaunch,
+    deleted: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  state.launchesByID[String(launchID)] = launch;
   state.coloniesByKey[key] = normalizeColony(colony, {
     planetID: normalizedPlanetID,
     ownerID: normalizedOwnerID,
@@ -1447,7 +2585,12 @@ function applyUserUpdateNetwork({
     planetTypeID,
   });
   writeState(state);
-  return state.coloniesByKey[key];
+
+  return {
+    success: true,
+    lastLaunchTime: launchTime,
+    launch,
+  };
 }
 
 function abandonColony(planetID, ownerID) {
@@ -1471,8 +2614,21 @@ function getColony(planetID, ownerID) {
   }
 
   const state = readState({ repair: true });
-  const colony = state.coloniesByKey[colonyKey(normalizedPlanetID, normalizedOwnerID)];
-  return colony ? normalizeColony(colony, { planetID: normalizedPlanetID, ownerID: normalizedOwnerID }) : null;
+  const key = colonyKey(normalizedPlanetID, normalizedOwnerID);
+  const colony = state.coloniesByKey[key];
+  if (!colony) {
+    return null;
+  }
+
+  const simulationResult = runColonySimulation(colony, currentFileTimeString(), {
+    planetID: normalizedPlanetID,
+    ownerID: normalizedOwnerID,
+  });
+  if (simulationResult.changed) {
+    state.coloniesByKey[key] = simulationResult.colony;
+    writeState(state);
+  }
+  return simulationResult.colony;
 }
 
 function listColoniesForCharacter(ownerID) {
@@ -1482,12 +2638,27 @@ function listColoniesForCharacter(ownerID) {
   }
 
   const state = readState({ repair: true });
-  return Object.values(state.coloniesByKey)
-    .filter((colony) => normalizeInteger(colony && colony.ownerID, 0) === normalizedOwnerID)
-    .map((colony) => normalizeColony(colony, {
-      planetID: colony && colony.planetID,
+  const colonies = [];
+  let changed = false;
+  for (const [key, rawColony] of Object.entries(state.coloniesByKey)) {
+    if (normalizeInteger(rawColony && rawColony.ownerID, 0) !== normalizedOwnerID) {
+      continue;
+    }
+
+    const simulationResult = runColonySimulation(rawColony, currentFileTimeString(), {
+      planetID: rawColony && rawColony.planetID,
       ownerID: normalizedOwnerID,
-    }));
+    });
+    if (simulationResult.changed) {
+      state.coloniesByKey[key] = simulationResult.colony;
+      changed = true;
+    }
+    colonies.push(simulationResult.colony);
+  }
+  if (changed) {
+    writeState(state);
+  }
+  return colonies;
 }
 
 function listColoniesForPlanet(planetID) {
@@ -1497,12 +2668,345 @@ function listColoniesForPlanet(planetID) {
   }
 
   const state = readState({ repair: true });
-  return Object.values(state.coloniesByKey)
-    .filter((colony) => normalizeInteger(colony && colony.planetID, 0) === normalizedPlanetID)
-    .map((colony) => normalizeColony(colony, {
+  const colonies = [];
+  let changed = false;
+  for (const [key, rawColony] of Object.entries(state.coloniesByKey)) {
+    if (normalizeInteger(rawColony && rawColony.planetID, 0) !== normalizedPlanetID) {
+      continue;
+    }
+
+    const simulationResult = runColonySimulation(rawColony, currentFileTimeString(), {
       planetID: normalizedPlanetID,
-      ownerID: colony && colony.ownerID,
-    }));
+      ownerID: rawColony && rawColony.ownerID,
+    });
+    if (simulationResult.changed) {
+      state.coloniesByKey[key] = simulationResult.colony;
+      changed = true;
+    }
+    colonies.push(simulationResult.colony);
+  }
+  if (changed) {
+    writeState(state);
+  }
+  return colonies;
+}
+
+function getColonyByPin(ownerID, pinID) {
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  const normalizedPinID = normalizeInteger(pinID, 0);
+  if (normalizedOwnerID <= 0 || normalizedPinID <= 0) {
+    return null;
+  }
+
+  const state = readState({ repair: true });
+  let changed = false;
+  for (const [key, rawColony] of Object.entries(state.coloniesByKey || {})) {
+    if (normalizeInteger(rawColony && rawColony.ownerID, 0) !== normalizedOwnerID) {
+      continue;
+    }
+
+    const simulationResult = runColonySimulation(rawColony, currentFileTimeString(), {
+      planetID: rawColony && rawColony.planetID,
+      ownerID: normalizedOwnerID,
+    });
+    const colony = simulationResult.colony;
+    if (simulationResult.changed) {
+      state.coloniesByKey[key] = colony;
+      changed = true;
+    }
+    if (findPin(colony, normalizedPinID)) {
+      if (changed) {
+        writeState(state);
+      }
+      return colony;
+    }
+  }
+
+  if (changed) {
+    writeState(state);
+  }
+  return null;
+}
+
+function prepareSpaceportImportExport({
+  planetID,
+  ownerID,
+  spaceportPinID,
+  importCommodities = {},
+  exportCommodities = {},
+} = {}) {
+  const normalizedPlanetID = normalizeInteger(planetID, 0);
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  const normalizedSpaceportPinID = normalizeInteger(spaceportPinID, 0);
+  if (normalizedPlanetID <= 0 || normalizedOwnerID <= 0 || normalizedSpaceportPinID <= 0) {
+    return { success: false, errorMsg: "CannotImportEndpointNotFound" };
+  }
+
+  const normalizedImports = normalizeContents(importCommodities);
+  const normalizedExports = normalizeContents(exportCommodities);
+  if (
+    Object.keys(normalizedImports).length < 1 &&
+    Object.keys(normalizedExports).length < 1
+  ) {
+    return { success: false, errorMsg: "PleaseSelectCommoditiesToImport" };
+  }
+
+  const state = readState({ repair: true });
+  const key = colonyKey(normalizedPlanetID, normalizedOwnerID);
+  if (!state.coloniesByKey[key]) {
+    return { success: false, errorMsg: "CannotImportEndpointNotFound" };
+  }
+
+  const simulationResult = runColonySimulation(state.coloniesByKey[key], currentFileTimeString(), {
+    planetID: normalizedPlanetID,
+    ownerID: normalizedOwnerID,
+  });
+  const colony = simulationResult.colony;
+  const spaceportPin = findPin(colony, normalizedSpaceportPinID);
+  if (!spaceportPin || getPinEntityType(spaceportPin) !== "spaceport") {
+    return { success: false, errorMsg: "CannotImportEndpointNotFound" };
+  }
+
+  const workingPin = cloneJson(spaceportPin);
+  for (const [typeID, quantity] of Object.entries(normalizedExports)) {
+    if (getContentsQuantity(workingPin, typeID) < quantity) {
+      return { success: false, errorMsg: "CannotLaunchCommoditiesNotFound" };
+    }
+    removeCommodityFromPin(workingPin, typeID, quantity);
+  }
+
+  for (const [typeID, quantity] of Object.entries(normalizedImports)) {
+    if (getAcceptableQuantity(workingPin, typeID, quantity) < quantity) {
+      return { success: false, errorMsg: "NotEnoughCargoSpace" };
+    }
+    addCommodityToPin(workingPin, typeID, quantity);
+  }
+
+  return {
+    success: true,
+    state,
+    key,
+    colony,
+    spaceportPin,
+    workingPin,
+    importCommodities: normalizedImports,
+    exportCommodities: normalizedExports,
+  };
+}
+
+function prepareExpeditedTransfer({
+  planetID,
+  ownerID,
+  solarSystemID = 0,
+  planetTypeID = 0,
+  planetRadius = 0,
+  path = [],
+  commodities = {},
+} = {}) {
+  const normalizedPlanetID = normalizeInteger(planetID, 0);
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  const normalizedPath = normalizeTransferPath(path);
+  const normalizedCommodities = normalizeContents(commodities);
+  if (normalizedPlanetID <= 0 || normalizedOwnerID <= 0) {
+    return { success: false, errorMsg: "CannotManagePlanetWithoutCommandCenter" };
+  }
+  if (normalizedPath.length < 2) {
+    return { success: false, errorMsg: "CreateRouteTooShort" };
+  }
+  if (Object.keys(normalizedCommodities).length < 1) {
+    return { success: false, errorMsg: "CreateRouteWithoutCommodities" };
+  }
+
+  const state = readState({ repair: true });
+  const key = colonyKey(normalizedPlanetID, normalizedOwnerID);
+  if (!state.coloniesByKey[key]) {
+    return { success: false, errorMsg: "CannotManagePlanetWithoutCommandCenter" };
+  }
+
+  const runTime = currentFileTimeString();
+  const simulationResult = runColonySimulation(state.coloniesByKey[key], runTime, {
+    planetID: normalizedPlanetID,
+    ownerID: normalizedOwnerID,
+    solarSystemID,
+    planetTypeID,
+    planetRadius,
+  });
+  const colony = simulationResult.colony;
+  const sourcePin = findPin(colony, normalizedPath[0]);
+  const destinationPin = findPin(colony, normalizedPath[normalizedPath.length - 1]);
+  if (!sourcePin || !destinationPin) {
+    return { success: false, errorMsg: "RouteFailedValidationPinDoesNotExist" };
+  }
+  if (!isStorageEntityType(getPinEntityType(sourcePin))) {
+    return { success: false, errorMsg: "RouteFailedValidationExpeditedSourceNotStorage" };
+  }
+
+  for (const pinID of normalizedPath) {
+    const pin = findPin(colony, pinID);
+    if (!pin) {
+      return { success: false, errorMsg: "RouteFailedValidationPinDoesNotExist" };
+    }
+    if (normalizeInteger(pin.ownerID, normalizedOwnerID) !== normalizedOwnerID) {
+      return { success: false, errorMsg: "RouteFailedValidationPinNotYours" };
+    }
+  }
+
+  for (const [typeID, quantity] of Object.entries(normalizedCommodities)) {
+    if (getContentsQuantity(sourcePin, typeID) <= 0) {
+      return { success: false, errorMsg: "RouteFailedValidationExpeditedSourceLacksCommodity" };
+    }
+    if (getContentsQuantity(sourcePin, typeID) < quantity) {
+      return { success: false, errorMsg: "RouteFailedValidationExpeditedSourceLacksCommodityQty" };
+    }
+    if (getAcceptableQuantity(destinationPin, typeID, quantity) < 1) {
+      return { success: false, errorMsg: "RouteFailedValidationExpeditedDestinationCannotAccept" };
+    }
+  }
+
+  let minBandwidth;
+  try {
+    minBandwidth = getMinimumLinkBandwidthForPath(colony, normalizedPath);
+  } catch (error) {
+    return {
+      success: false,
+      errorMsg: error && error.message ? error.message : "RouteFailedValidationNoBandwidthAvailable",
+    };
+  }
+  if (!(minBandwidth > 0)) {
+    return { success: false, errorMsg: "RouteFailedValidationNoBandwidthAvailable" };
+  }
+
+  const nextTransferTime = filetimeBigInt(sourcePin.lastRunTime, 0n);
+  const currentRunTime = filetimeBigInt(runTime, currentFileTime());
+  if (nextTransferTime > currentRunTime) {
+    return { success: false, errorMsg: "RouteFailedValidationExpeditedSourceNotReady" };
+  }
+
+  return {
+    success: true,
+    state,
+    key,
+    colony,
+    sourcePin,
+    destinationPin,
+    path: normalizedPath,
+    commoditiesToTransfer: normalizedCommodities,
+    minBandwidth,
+    runTime,
+  };
+}
+
+function previewTransferCommodities(options = {}) {
+  const result = prepareExpeditedTransfer(options);
+  if (!result.success) {
+    return result;
+  }
+  return {
+    success: true,
+    path: [...result.path],
+    commoditiesToTransfer: { ...result.commoditiesToTransfer },
+    minBandwidth: result.minBandwidth,
+    runTime: result.runTime,
+    sourcePin: { ...result.sourcePin },
+    destinationPin: { ...result.destinationPin },
+  };
+}
+
+function transferCommodities(options = {}) {
+  const result = prepareExpeditedTransfer(options);
+  if (!result.success) {
+    return result;
+  }
+
+  const movedCommodities = {};
+  for (const [typeID, quantity] of Object.entries(result.commoditiesToTransfer)) {
+    const transferQuantity = Math.min(
+      normalizeInteger(quantity, 0),
+      getContentsQuantity(result.sourcePin, typeID),
+    );
+    const movedQuantity = addCommodityToPin(result.destinationPin, typeID, transferQuantity);
+    if (movedQuantity > 0) {
+      removeCommodityFromPin(result.sourcePin, typeID, movedQuantity);
+      movedCommodities[String(typeID)] = movedQuantity;
+    }
+  }
+
+  if (Object.keys(movedCommodities).length < 1) {
+    return { success: false, errorMsg: "RouteFailedValidationExpeditedDestinationCannotAccept" };
+  }
+
+  const transferTicks = BigInt(getExpeditedTransferTimeTicks(
+    result.minBandwidth,
+    movedCommodities,
+  ));
+  const sourceRunTime = (
+    filetimeBigInt(result.runTime, currentFileTime()) + transferTicks
+  ).toString();
+  result.sourcePin.lastRunTime = sourceRunTime;
+  result.colony.currentSimTime = result.runTime;
+  result.colony.updatedAt = new Date().toISOString();
+  result.state.coloniesByKey[result.key] = normalizeColony(result.colony, {
+    planetID: options.planetID,
+    ownerID: options.ownerID,
+    solarSystemID: options.solarSystemID,
+    planetTypeID: options.planetTypeID,
+    planetRadius: options.planetRadius,
+  });
+  writeState(result.state);
+
+  return {
+    success: true,
+    simTime: result.runTime,
+    sourceRunTime,
+    movedCommodities,
+    path: result.path,
+    sourcePinID: normalizeInteger(result.sourcePin.pinID, 0),
+    destinationPinID: normalizeInteger(result.destinationPin.pinID, 0),
+  };
+}
+
+function previewSpaceportImportExport(options = {}) {
+  const result = prepareSpaceportImportExport(options);
+  if (!result.success) {
+    return result;
+  }
+  return {
+    success: true,
+    colony: result.colony,
+    spaceportPin: { ...result.spaceportPin },
+    importCommodities: { ...result.importCommodities },
+    exportCommodities: { ...result.exportCommodities },
+  };
+}
+
+function applySpaceportImportExport(options = {}) {
+  const {
+    planetID,
+    ownerID,
+  } = options;
+  const normalizedPlanetID = normalizeInteger(planetID, 0);
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  const result = prepareSpaceportImportExport(options);
+  if (!result.success) {
+    return result;
+  }
+
+  result.spaceportPin.contents = normalizeContents(result.workingPin.contents);
+  result.colony.currentSimTime = currentFileTimeString();
+  result.colony.updatedAt = new Date().toISOString();
+  result.state.coloniesByKey[result.key] = normalizeColony(result.colony, {
+    planetID: normalizedPlanetID,
+    ownerID: normalizedOwnerID,
+  });
+  writeState(result.state);
+
+  return {
+    success: true,
+    colony: result.state.coloniesByKey[result.key],
+    spaceportPin: normalizePin(result.spaceportPin, normalizedOwnerID),
+    importCommodities: result.importCommodities,
+    exportCommodities: result.exportCommodities,
+  };
 }
 
 function listLaunchesForCharacter(ownerID) {
@@ -1513,10 +3017,273 @@ function listLaunchesForCharacter(ownerID) {
 
   const state = readState({ repair: true });
   return Object.values(state.launchesByID)
+    .map(normalizeLaunchRecord)
     .filter((launch) => (
       normalizeInteger(launch && launch.ownerID, 0) === normalizedOwnerID &&
       launch.deleted !== true
     ));
+}
+
+function cleanupExpiredLaunches(options = {}) {
+  const state = readState({ repair: true });
+  const nowFileTime = filetimeBigInt(options.nowFileTime, currentFileTime());
+  const maxAgeDays = normalizeInteger(options.maxAgeDays, 0);
+  const maxAgeTicks = maxAgeDays > 0
+    ? BigInt(maxAgeDays) * DAY_TICKS
+    : null;
+  const ownerID = normalizeInteger(options.ownerID, 0);
+  const planetID = normalizeInteger(options.planetID, 0);
+  let scanned = 0;
+  let deleted = 0;
+  const deletedLaunchIDs = [];
+
+  for (const [launchKey, rawLaunch] of Object.entries(state.launchesByID || {})) {
+    const launch = normalizeLaunchRecord(rawLaunch);
+    if (ownerID > 0 && normalizeInteger(launch.ownerID, 0) !== ownerID) {
+      continue;
+    }
+    if (planetID > 0 && normalizeInteger(launch.planetID, 0) !== planetID) {
+      continue;
+    }
+
+    scanned += 1;
+    if (launch.deleted === true || !isLaunchCleanupEligible(launch, nowFileTime, maxAgeTicks)) {
+      continue;
+    }
+
+    launch.deleted = true;
+    launch.deletedAt = new Date().toISOString();
+    launch.updatedAt = launch.deletedAt;
+    state.launchesByID[launchKey] = launch;
+    deleted += 1;
+    deletedLaunchIDs.push(normalizeInteger(launch.launchID, 0));
+  }
+
+  if (deleted > 0) {
+    writeState(state);
+  }
+
+  return {
+    scanned,
+    deleted,
+    deletedLaunchIDs,
+    maxAgeDays: maxAgeDays > 0
+      ? maxAgeDays
+      : Number((PI_LAUNCH_ORBIT_DECAY_TICKS + PI_LAUNCH_CLEANUP_GRACE_TICKS) / DAY_TICKS),
+  };
+}
+
+function summarizePin(pin = {}) {
+  const entityType = getPinEntityType(pin);
+  return {
+    pinID: normalizeInteger(pin.pinID ?? pin.id, 0),
+    typeID: normalizeInteger(pin.typeID, 0),
+    entityType: entityType || "",
+    state: normalizeInteger(pin.state, STATE_IDLE),
+    schematicID: normalizeNullableInteger(pin.schematicID),
+    programType: normalizeNullableInteger(pin.programType),
+    contents: summarizeContents(pin.contents),
+    lastRunTime: pin.lastRunTime ? String(pin.lastRunTime) : null,
+    lastLaunchTime: pin.lastLaunchTime ? String(pin.lastLaunchTime) : null,
+  };
+}
+
+function summarizeColony(colony = {}) {
+  const normalizedColony = normalizeColony(colony, {
+    planetID: colony && colony.planetID,
+    ownerID: colony && colony.ownerID,
+  });
+  const pinSummaries = (Array.isArray(normalizedColony.pins) ? normalizedColony.pins : [])
+    .map(summarizePin)
+    .sort((left, right) => left.pinID - right.pinID);
+  const contentsByTypeID = {};
+  for (const pin of normalizedColony.pins) {
+    for (const [typeID, quantity] of Object.entries(normalizeContents(pin.contents))) {
+      contentsByTypeID[typeID] = normalizeInteger(contentsByTypeID[typeID], 0) +
+        normalizeInteger(quantity, 0);
+    }
+  }
+
+  return {
+    planetID: normalizeInteger(normalizedColony.planetID, 0),
+    ownerID: normalizeInteger(normalizedColony.ownerID, 0),
+    level: normalizeInteger(normalizedColony.level, 0),
+    currentSimTime: normalizedColony.currentSimTime ? String(normalizedColony.currentSimTime) : null,
+    pinCount: pinSummaries.length,
+    linkCount: Array.isArray(normalizedColony.links) ? normalizedColony.links.length : 0,
+    routeCount: Array.isArray(normalizedColony.routes) ? normalizedColony.routes.length : 0,
+    activePinCount: pinSummaries.filter((pin) => pin.state === STATE_ACTIVE).length,
+    pins: pinSummaries,
+    contentsByTypeID: summarizeContents(contentsByTypeID),
+  };
+}
+
+function summarizeResourceRecord(record = {}) {
+  if (!isPlainObject(record)) {
+    return {
+      resourceTypeIDs: [],
+      qualitiesByTypeID: {},
+      layers: [],
+    };
+  }
+
+  const layers = [];
+  for (const resourceTypeID of normalizeResourceTypeIDs(record.resourceTypeIDs)) {
+    const layer = getResourceLayerFromRecord(record, resourceTypeID);
+    layers.push({
+      resourceTypeID,
+      quality: normalizeInteger(
+        record.qualitiesByTypeID && record.qualitiesByTypeID[String(resourceTypeID)],
+        0,
+      ),
+      hotspotCount: layer && Array.isArray(layer.hotspots) ? layer.hotspots.length : 0,
+      depletionEventCount: layer && Array.isArray(layer.depletionEvents)
+        ? layer.depletionEvents.length
+        : 0,
+    });
+  }
+
+  return {
+    version: normalizeInteger(record.version, 0),
+    planetID: normalizeInteger(record.planetID, 0),
+    resourceTypeIDs: normalizeResourceTypeIDs(record.resourceTypeIDs),
+    qualitiesByTypeID: isPlainObject(record.qualitiesByTypeID)
+      ? { ...record.qualitiesByTypeID }
+      : {},
+    layers,
+  };
+}
+
+function getPlanetDiagnostics(options = {}) {
+  const state = readState({ repair: true });
+  const planetID = normalizeInteger(options.planetID, 0);
+  const ownerID = normalizeInteger(options.ownerID, 0);
+  const nowFileTime = currentFileTime();
+  const colonies = Object.values(state.coloniesByKey || {})
+    .filter((colony) => (
+      (planetID <= 0 || normalizeInteger(colony && colony.planetID, 0) === planetID) &&
+      (ownerID <= 0 || normalizeInteger(colony && colony.ownerID, 0) === ownerID)
+    ))
+    .map(summarizeColony)
+    .sort((left, right) => (
+      left.planetID === right.planetID
+        ? left.ownerID - right.ownerID
+        : left.planetID - right.planetID
+    ));
+  const launches = Object.values(state.launchesByID || {})
+    .map(normalizeLaunchRecord)
+    .filter((launch) => (
+      (planetID <= 0 || normalizeInteger(launch.planetID, 0) === planetID) &&
+      (ownerID <= 0 || normalizeInteger(launch.ownerID, 0) === ownerID)
+    ));
+  const activeLaunches = launches.filter((launch) => (
+    launch.deleted !== true && !isLaunchExpired(launch, nowFileTime)
+  ));
+  const expiredLaunches = launches.filter((launch) => (
+    launch.deleted !== true && isLaunchExpired(launch, nowFileTime)
+  ));
+  const resourceRecord = planetID > 0
+    ? state.resourcesByPlanetID[String(planetID)]
+    : null;
+
+  return {
+    schemaVersion: normalizeInteger(state.schemaVersion, SCHEMA_VERSION),
+    planetID,
+    ownerID,
+    colonyCount: colonies.length,
+    colonies,
+    launches: {
+      total: launches.length,
+      active: activeLaunches.length,
+      expired: expiredLaunches.length,
+      deleted: launches.filter((launch) => launch.deleted === true).length,
+    },
+    resources: summarizeResourceRecord(resourceRecord),
+    nextIDs: isPlainObject(state.nextIDs) ? { ...state.nextIDs } : cloneJson(DEFAULT_NEXT_IDS),
+  };
+}
+
+function addCommodityToColonyPin({
+  planetID,
+  ownerID,
+  pinID,
+  typeID,
+  quantity,
+} = {}) {
+  const normalizedPlanetID = normalizeInteger(planetID, 0);
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  const normalizedPinID = normalizeInteger(pinID, 0);
+  const normalizedTypeID = normalizeInteger(typeID, 0);
+  const normalizedQuantity = normalizeInteger(quantity, 0);
+  if (
+    normalizedPlanetID <= 0 ||
+    normalizedOwnerID <= 0 ||
+    normalizedPinID <= 0 ||
+    normalizedTypeID <= 0 ||
+    normalizedQuantity <= 0
+  ) {
+    return { success: false, errorMsg: "INVALID_ARGUMENTS" };
+  }
+
+  const state = readState({ repair: true });
+  const key = colonyKey(normalizedPlanetID, normalizedOwnerID);
+  const colony = state.coloniesByKey[key]
+    ? normalizeColony(state.coloniesByKey[key], {
+      planetID: normalizedPlanetID,
+      ownerID: normalizedOwnerID,
+    })
+    : null;
+  if (!colony) {
+    return { success: false, errorMsg: "COLONY_NOT_FOUND" };
+  }
+
+  const pin = findPin(colony, normalizedPinID);
+  if (!pin) {
+    return { success: false, errorMsg: "PIN_NOT_FOUND" };
+  }
+
+  const added = addCommodityToPin(pin, normalizedTypeID, normalizedQuantity);
+  if (added <= 0) {
+    return { success: false, errorMsg: "PIN_CANNOT_ACCEPT_COMMODITY" };
+  }
+
+  state.coloniesByKey[key] = normalizeColony(colony, {
+    planetID: normalizedPlanetID,
+    ownerID: normalizedOwnerID,
+  });
+  writeState(state);
+  return {
+    success: true,
+    added,
+    colony: state.coloniesByKey[key],
+  };
+}
+
+function getLaunch(launchID, ownerID = 0) {
+  const normalizedLaunchID = normalizeInteger(launchID, 0);
+  if (normalizedLaunchID <= 0) {
+    return null;
+  }
+
+  const state = readState({ repair: true });
+  const launch = state.launchesByID[String(normalizedLaunchID)];
+  if (!launch) {
+    return null;
+  }
+
+  const normalizedLaunch = normalizeLaunchRecord(launch);
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  if (
+    normalizedLaunch.deleted === true ||
+    (
+      normalizedOwnerID > 0 &&
+      normalizeInteger(normalizedLaunch.ownerID, 0) > 0 &&
+      normalizeInteger(normalizedLaunch.ownerID, 0) !== normalizedOwnerID
+    )
+  ) {
+    return null;
+  }
+  return normalizedLaunch;
 }
 
 function deleteLaunch(launchID, ownerID = 0) {
@@ -1546,6 +3313,43 @@ function deleteLaunch(launchID, ownerID = 0) {
   return true;
 }
 
+function attachLaunchContainer({
+  launchID,
+  ownerID = 0,
+  itemID,
+} = {}) {
+  const normalizedLaunchID = normalizeInteger(launchID, 0);
+  const normalizedItemID = normalizeInteger(itemID, 0);
+  if (normalizedLaunchID <= 0 || normalizedItemID <= 0) {
+    return null;
+  }
+
+  const state = readState({ repair: true });
+  const launch = state.launchesByID[String(normalizedLaunchID)];
+  if (!launch) {
+    return null;
+  }
+
+  const normalizedOwnerID = normalizeInteger(ownerID, 0);
+  if (
+    normalizedOwnerID > 0 &&
+    normalizeInteger(launch.ownerID, 0) > 0 &&
+    normalizeInteger(launch.ownerID, 0) !== normalizedOwnerID
+  ) {
+    return null;
+  }
+
+  const updatedLaunch = normalizeLaunchRecord({
+    ...launch,
+    itemID: normalizedItemID,
+    physicalContainerID: normalizedItemID,
+    updatedAt: new Date().toISOString(),
+  });
+  state.launchesByID[String(normalizedLaunchID)] = updatedLaunch;
+  writeState(state);
+  return updatedLaunch;
+}
+
 module.exports = {
   TABLE_NAME,
   SCHEMA_VERSION,
@@ -1553,15 +3357,31 @@ module.exports = {
   COMMAND,
   LINK_TYPE_ID,
   PLANET_RESOURCE_MAX_VALUE,
+  PI_LAUNCH_ORBIT_DECAY_TICKS,
+  EXPEDITED_TRANSFER_MINIMUM_TICKS,
   getOrCreatePlanetResources,
   getResourceDataForClient,
   getResourceLayer,
   evaluateResourceValueAt,
   getColony,
+  getColonyByPin,
   listColoniesForCharacter,
   listColoniesForPlanet,
   listLaunchesForCharacter,
+  hasAcceptedNetworkEdit,
+  cleanupExpiredLaunches,
+  getPlanetDiagnostics,
+  addCommodityToColonyPin,
+  getLaunch,
   deleteLaunch,
+  attachLaunchContainer,
+  previewLaunchCommodities,
+  launchCommodities,
+  previewTransferCommodities,
+  transferCommodities,
+  previewSpaceportImportExport,
+  applySpaceportImportExport,
+  previewUserUpdateNetwork,
   applyUserUpdateNetwork,
   abandonColony,
   estimateProgramResult,
@@ -1575,5 +3395,7 @@ module.exports = {
     normalizeResourceLayer,
     normalizeState,
     stableHash,
+    validateColonyNetwork,
+    getExpeditedTransferTimeTicks,
   },
 };

@@ -3,6 +3,9 @@ const path = require("path");
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
 const {
+  throwWrappedUserError,
+} = require(path.join(__dirname, "../../common/machoErrors"));
+const {
   getCharacterRecord,
   syncInventoryItemForSession,
 } = require(path.join(
@@ -14,6 +17,9 @@ const {
   consumeInventoryItemQuantity,
   findItemById,
   getActiveShipItem,
+  grantItemsToCharacterLocation,
+  createSpaceItemForCharacter,
+  removeInventoryItem,
 } = require(path.join(__dirname, "../inventory/itemStore"));
 const {
   buildBoundObjectResponse,
@@ -29,10 +35,19 @@ const {
   TABLE,
   readStaticRows,
 } = require(path.join(__dirname, "../_shared/referenceData"));
+const {
+  JOURNAL_ENTRY_TYPE,
+  adjustCharacterBalance,
+  buildNotEnoughMoneyUserErrorValues,
+  getCharacterWallet,
+} = require(path.join(__dirname, "../account/walletState"));
 const planetStaticData = require("./planetStaticData");
+const planetCostCalculator = require("./planetCostCalculator");
 const planetRuntimeStore = require("./planetRuntimeStore");
+const spaceRuntime = require(path.join(__dirname, "../../space/runtime"));
 
 let planetMetaCache = null;
+const PLANETARY_LAUNCH_CONTAINER_TYPE_ID = 2263;
 
 function toInt(value, fallback = 0) {
   const numericValue = Number(value);
@@ -71,10 +86,17 @@ function getPlanetMetaByID() {
       solarSystemID: toInt(row.solarSystemID, 0),
       typeID: toInt(row.typeID, 0),
       celestialIndex: toInt(row.celestialIndex, 0),
-      radius: toInt(row.radius, 0),
-      security: Number(row.security),
-      itemName: row.itemName || "",
-    });
+        radius: toInt(row.radius, 0),
+        position: row.position && typeof row.position === "object"
+          ? {
+            x: Number(row.position.x) || 0,
+            y: Number(row.position.y) || 0,
+            z: Number(row.position.z) || 0,
+          }
+          : { x: 0, y: 0, z: 0 },
+        security: Number(row.security),
+        itemName: row.itemName || "",
+      });
   }
 
   return planetMetaCache;
@@ -88,6 +110,7 @@ function getPlanetMeta(planetID) {
     typeID: 0,
     celestialIndex: 0,
     radius: 0,
+    position: { x: 0, y: 0, z: 0 },
     security: 0,
     itemName: "",
   };
@@ -322,6 +345,44 @@ function buildResourceDataResponse(planetMeta, info = {}) {
   ]);
 }
 
+function extractSurfacePoint(value) {
+  const unwrapped = unwrapMarshalValue(value);
+  if (Array.isArray(unwrapped)) {
+    return {
+      latitude: Number(unwrapped[0]) || 0,
+      longitude: Number(unwrapped[1]) || 0,
+    };
+  }
+  if (unwrapped && typeof unwrapped === "object") {
+    return {
+      latitude: Number(unwrapped.latitude ?? unwrapped.theta ?? unwrapped[0]) || 0,
+      longitude: Number(unwrapped.longitude ?? unwrapped.phi ?? unwrapped[1]) || 0,
+    };
+  }
+  return { latitude: 0, longitude: 0 };
+}
+
+function buildLocalDistributionReport(planetMeta, surfacePoint = {}) {
+  const resourceTypeIDs = getResourceTypeIDsForPlanetType(planetMeta.typeID);
+  planetRuntimeStore.getOrCreatePlanetResources(planetMeta, resourceTypeIDs);
+  const resources = resourceTypeIDs.map((resourceTypeID) => [
+    resourceTypeID,
+    planetRuntimeStore.evaluateResourceValueAt(
+      planetMeta.planetID,
+      resourceTypeID,
+      surfacePoint.latitude,
+      surfacePoint.longitude,
+    ),
+  ]);
+
+  return buildKeyVal([
+    ["planetID", toInt(planetMeta.planetID, 0)],
+    ["latitude", Number(surfacePoint.latitude) || 0],
+    ["longitude", Number(surfacePoint.longitude) || 0],
+    ["resources", buildDict(resources)],
+  ]);
+}
+
 function buildCommandPinSummary(pin = {}, ownerID = 0) {
   const pinID = toInt(pin.pinID ?? pin.id, 0);
   return buildKeyVal([
@@ -430,6 +491,18 @@ function getSessionCharacterID(session) {
   );
 }
 
+function getOptionalOwnerID(args, index, session) {
+  if (!Array.isArray(args) || args.length <= index) {
+    return getSessionCharacterID(session);
+  }
+
+  const value = unwrapMarshalValue(args[index]);
+  if (value === null || value === undefined || value === "") {
+    return getSessionCharacterID(session);
+  }
+  return toInt(value, getSessionCharacterID(session));
+}
+
 function getSessionShipID(session, characterID = 0) {
   const sessionShipID = toInt(
     session && (
@@ -480,6 +553,163 @@ function syncInventoryChanges(session, changes = []) {
       { emitCfgLocation: true },
     );
   }
+}
+
+function buildLaunchCommodityGrantEntries(contents = {}) {
+  return Object.entries(contents || {})
+    .map(([typeID, quantity]) => ({
+      itemType: toInt(typeID, 0),
+      quantity: toInt(quantity, 0),
+      options: { singleton: 0 },
+    }))
+    .filter((entry) => entry.itemType > 0 && entry.quantity > 0);
+}
+
+function createPhysicalLaunchContainer(launch, session) {
+  const characterID = getSessionCharacterID(session);
+  const solarSystemID = toInt(launch && launch.solarSystemID, 0);
+  const launchID = toInt(launch && launch.launchID, 0);
+  if (characterID <= 0 || solarSystemID <= 0 || launchID <= 0) {
+    return null;
+  }
+
+  const grantEntries = buildLaunchCommodityGrantEntries(launch.contents);
+  if (grantEntries.length < 1) {
+    return null;
+  }
+
+  const simTimeMs = spaceRuntime.getSimulationTimeMsForSession(session, Date.now());
+  const expiresAtMs = simTimeMs + Number(
+    planetRuntimeStore.PI_LAUNCH_ORBIT_DECAY_TICKS / 10000n,
+  );
+  const createResult = createSpaceItemForCharacter(
+    characterID,
+    solarSystemID,
+    PLANETARY_LAUNCH_CONTAINER_TYPE_ID,
+    {
+      itemName: "Planetary Launch Container",
+      customInfo: `PI launch ${launchID}`,
+      position: {
+        x: Number(launch.x) || 0,
+        y: Number(launch.y) || 0,
+        z: Number(launch.z) || 0,
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      mode: "STOP",
+      speedFraction: 0,
+      createdAtMs: simTimeMs,
+      expiresAtMs,
+    },
+  );
+  if (!createResult.success || !createResult.data) {
+    log.warn(
+      `[PlanetMgr] Failed to create PI launch container launchID=${launchID}: ${createResult.errorMsg || "UNKNOWN"}`,
+    );
+    return null;
+  }
+
+  const containerID = toInt(createResult.data.itemID, 0);
+  const grantResult = grantItemsToCharacterLocation(
+    characterID,
+    containerID,
+    ITEM_FLAGS.HANGAR,
+    grantEntries,
+  );
+  if (!grantResult.success) {
+    log.warn(
+      `[PlanetMgr] Failed to fill PI launch container launchID=${launchID} containerID=${containerID}: ${grantResult.errorMsg || "UNKNOWN"}`,
+    );
+    removeInventoryItem(containerID, { removeContents: true });
+    return null;
+  }
+
+  syncInventoryChanges(session, createResult.changes || []);
+  syncInventoryChanges(session, (grantResult.data && grantResult.data.changes) || []);
+
+  const spawnResult = spaceRuntime.spawnDynamicInventoryEntity(solarSystemID, containerID);
+  if (!spawnResult || !spawnResult.success) {
+    log.warn(
+      `[PlanetMgr] PI launch container persisted but did not spawn launchID=${launchID} containerID=${containerID}: ${(spawnResult && spawnResult.errorMsg) || "UNKNOWN"}`,
+    );
+  }
+
+  return planetRuntimeStore.attachLaunchContainer({
+    launchID,
+    ownerID: characterID,
+    itemID: containerID,
+  }) || {
+    ...launch,
+    itemID: containerID,
+    physicalContainerID: containerID,
+  };
+}
+
+function throwNotEnoughMoney(requiredAmount, currentBalance) {
+  throwWrappedUserError(
+    "NotEnoughMoney",
+    buildNotEnoughMoneyUserErrorValues(requiredAmount, currentBalance),
+  );
+}
+
+function debitPIWallet({
+  characterID,
+  amount,
+  entryTypeID,
+  referenceID = 0,
+  ownerID2 = 0,
+  description = "Planetary Interaction charge",
+} = {}) {
+  const normalizedAmount = Number(amount) || 0;
+  if (!(normalizedAmount > 0)) {
+    return null;
+  }
+
+  const wallet = getCharacterWallet(characterID);
+  if (!wallet) {
+    throwWrappedUserError("CustomNotify", {
+      notify: "Cannot charge PI wallet: character wallet not found.",
+    });
+  }
+  if (wallet.balance < normalizedAmount) {
+    throwNotEnoughMoney(normalizedAmount, wallet.balance);
+  }
+
+  const debitResult = adjustCharacterBalance(characterID, -normalizedAmount, {
+    entryTypeID,
+    referenceID,
+    ownerID1: characterID,
+    ownerID2,
+    description,
+  });
+  if (!debitResult.success) {
+    if (debitResult.errorMsg === "INSUFFICIENT_FUNDS") {
+      throwNotEnoughMoney(normalizedAmount, wallet.balance);
+    }
+    throwWrappedUserError("CustomNotify", {
+      notify: `Cannot charge PI wallet: ${debitResult.errorMsg || "wallet debit failed"}.`,
+    });
+  }
+
+  return debitResult;
+}
+
+function refundPIWalletDebit(characterID, debitResult, description) {
+  const amount = Math.abs(Number(debitResult && debitResult.delta) || 0);
+  if (!(amount > 0)) {
+    return;
+  }
+
+  adjustCharacterBalance(characterID, amount, {
+    entryTypeID: debitResult.journalEntry && debitResult.journalEntry.entryTypeID,
+    referenceID: debitResult.journalEntry && debitResult.journalEntry.referenceID,
+    ownerID1: characterID,
+    ownerID2: debitResult.journalEntry && debitResult.journalEntry.ownerID2,
+    description,
+  });
+}
+
+function getPlanetLabel(planetMeta = {}) {
+  return planetMeta.itemName || `planet ${toInt(planetMeta.planetID, 0) || "unknown"}`;
 }
 
 function consumePlacedCommandCenterItems(colony, session) {
@@ -627,6 +857,50 @@ class PlanetMgrService extends BaseService {
     return response;
   }
 
+  Handle_GMGetCompleteResource(args, session) {
+    const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
+    const resourceTypeID = toInt(unwrapMarshalValue(Array.isArray(args) ? args[0] : 0), 0);
+    const layer = String(unwrapMarshalValue(Array.isArray(args) ? args[1] : "base") || "base");
+    log.debug(
+      `[PlanetMgr] GMGetCompleteResource planetID=${planetID || "unknown"} resourceTypeID=${resourceTypeID || "unknown"} layer=${layer}`,
+    );
+    return buildResourceDataResponse(getPlanetMeta(planetID), {
+      resourceTypeID,
+      oldBand: 0,
+      newBand: 30,
+      proximity: null,
+    });
+  }
+
+  Handle_GMGetLocalDistributionReport(args, session) {
+    const planetID = extractPlanetIDFromArgs(args) ||
+      this._resolvePlanetID(args, session, { allowArgs: false });
+    const surfacePoint = extractSurfacePoint(Array.isArray(args) ? args[1] : null);
+    log.debug(
+      `[PlanetMgr] GMGetLocalDistributionReport planetID=${planetID || "unknown"}`,
+    );
+    return buildLocalDistributionReport(getPlanetMeta(planetID), surfacePoint);
+  }
+
+  Handle_GMGetSynchedServerState(args, session) {
+    const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
+    const ownerID = getOptionalOwnerID(args, 0, session);
+    const startMs = Date.now();
+    const colony = planetRuntimeStore.getColony(planetID, ownerID) || {
+      ownerID,
+      pins: [],
+      links: [],
+      routes: [],
+      level: 0,
+      currentSimTime: currentFileTime().toString(),
+    };
+    const duration = BigInt(Math.max(0, Date.now() - startMs)) * 10000n;
+    log.debug(
+      `[PlanetMgr] GMGetSynchedServerState planetID=${planetID || "unknown"} ownerID=${ownerID || "unknown"}`,
+    );
+    return [duration, buildSerializedColony(colony)];
+  }
+
   Handle_GetFullNetworkForOwner(args, session) {
     const planetID = this._resolvePlanetID(args, session, { allowArgs: true });
     const ownerID = toInt(
@@ -680,25 +954,170 @@ class PlanetMgrService extends BaseService {
   Handle_UserUpdateNetwork(args, session) {
     const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
     const planetMeta = getPlanetMeta(planetID);
+    const ownerID = getSessionCharacterID(session);
     const serializedChanges = unwrapMarshalValue(Array.isArray(args) ? args[0] : []);
     const commandCount = Array.isArray(serializedChanges) ? serializedChanges.length : 0;
     log.debug(
       `[PlanetMgr] UserUpdateNetwork planetID=${planetID || "unknown"} commands=${commandCount}`,
     );
 
-    const resourceTypeIDs = getResourceTypeIDsForPlanetType(planetMeta.typeID);
-    planetRuntimeStore.getOrCreatePlanetResources(planetMeta, resourceTypeIDs);
-    const colony = planetRuntimeStore.applyUserUpdateNetwork({
+    const editHash = planetCostCalculator.buildNetworkEditHash({
       planetID,
-      ownerID: getSessionCharacterID(session),
-      solarSystemID: planetMeta.solarSystemID,
-      planetTypeID: planetMeta.typeID,
+      ownerID,
       serializedChanges,
     });
+    if (planetRuntimeStore.hasAcceptedNetworkEdit({ planetID, ownerID, editHash })) {
+      const acceptedColony = planetRuntimeStore.getColony(planetID, ownerID);
+      if (acceptedColony) {
+        return buildSerializedColony(acceptedColony);
+      }
+    }
+
+    const resourceTypeIDs = getResourceTypeIDsForPlanetType(planetMeta.typeID);
+    planetRuntimeStore.getOrCreatePlanetResources(planetMeta, resourceTypeIDs);
+    const existingColony = planetRuntimeStore.getColony(planetID, ownerID);
+    const constructionQuote = planetCostCalculator.quoteNetworkConstructionCost(
+      existingColony,
+      serializedChanges,
+    );
+    try {
+      planetRuntimeStore.previewUserUpdateNetwork({
+        planetID,
+        ownerID,
+        solarSystemID: planetMeta.solarSystemID,
+        planetTypeID: planetMeta.typeID,
+        planetRadius: planetMeta.radius,
+        serializedChanges,
+      });
+    } catch (error) {
+      if (error && error.machoErrorResponse) {
+        throw error;
+      }
+      throwWrappedUserError(error && error.message ? error.message : "PlanetUpdateFailed");
+    }
+    const constructionDebit = debitPIWallet({
+      characterID: ownerID,
+      amount: constructionQuote.amount,
+      entryTypeID: JOURNAL_ENTRY_TYPE.PLANETARY_CONSTRUCTION,
+      referenceID: planetID,
+      ownerID2: planetID,
+      description: `Planetary construction on ${getPlanetLabel(planetMeta)}`,
+    });
+
+    let colony;
+    try {
+      colony = planetRuntimeStore.applyUserUpdateNetwork({
+        planetID,
+        ownerID,
+        solarSystemID: planetMeta.solarSystemID,
+        planetTypeID: planetMeta.typeID,
+        planetRadius: planetMeta.radius,
+        serializedChanges,
+        editHash,
+        constructionCost: constructionQuote.amount,
+      });
+    } catch (error) {
+      refundPIWalletDebit(
+        ownerID,
+        constructionDebit,
+        `Planetary construction refund on ${getPlanetLabel(planetMeta)}`,
+      );
+      if (error && error.machoErrorResponse) {
+        throw error;
+      }
+      throwWrappedUserError(error && error.message ? error.message : "PlanetUpdateFailed");
+    }
 
     consumePlacedCommandCenterItems(colony, session);
     sendPlanetNotification(session, "OnPlanetChangesSubmitted", [planetID]);
     return buildSerializedColony(colony);
+  }
+
+  Handle_UserLaunchCommodities(args, session) {
+    const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
+    const planetMeta = getPlanetMeta(planetID);
+    const ownerID = getSessionCharacterID(session);
+    const commandPinID = toInt(unwrapMarshalValue(Array.isArray(args) ? args[0] : 0), 0);
+    const commoditiesToLaunch = unwrapMarshalValue(Array.isArray(args) ? args[1] : {}) || {};
+    log.debug(
+      `[PlanetMgr] UserLaunchCommodities planetID=${planetID || "unknown"} commandPinID=${commandPinID || "unknown"}`,
+    );
+
+    const launchOptions = {
+      planetID,
+      ownerID,
+      solarSystemID: planetMeta.solarSystemID,
+      planetTypeID: planetMeta.typeID,
+      commandPinID,
+      commodities: commoditiesToLaunch,
+      planetMeta,
+    };
+    const preview = planetRuntimeStore.previewLaunchCommodities(launchOptions);
+    if (!preview.success) {
+      throwWrappedUserError(preview.errorMsg || "CannotLaunchCommoditiesNotFound");
+    }
+
+    const exportTax = planetCostCalculator.calculateExportTax(
+      preview.commandPin && preview.commandPin.typeID,
+      preview.commoditiesToLaunch,
+      planetCostCalculator.DEFAULT_TAX_RATE,
+    );
+    const taxDebit = debitPIWallet({
+      characterID: ownerID,
+      amount: exportTax,
+      entryTypeID: JOURNAL_ENTRY_TYPE.PLANETARY_EXPORT_TAX,
+      referenceID: planetID,
+      ownerID2: planetID,
+      description: `Planetary export tax on ${getPlanetLabel(planetMeta)}`,
+    });
+
+    const result = planetRuntimeStore.launchCommodities(launchOptions);
+    if (!result.success) {
+      refundPIWalletDebit(
+        ownerID,
+        taxDebit,
+        `Planetary export tax refund on ${getPlanetLabel(planetMeta)}`,
+      );
+      throwWrappedUserError(result.errorMsg || "CannotLaunchCommoditiesNotFound");
+    }
+
+    createPhysicalLaunchContainer(result.launch, session);
+    sendPlanetNotification(session, "OnRefreshPins", [[commandPinID]]);
+    sendPlanetNotification(session, "OnPILaunchesChange", []);
+    return result.lastLaunchTime ? BigInt(result.lastLaunchTime) : currentFileTime();
+  }
+
+  Handle_UserTransferCommodities(args, session) {
+    const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
+    const planetMeta = getPlanetMeta(planetID);
+    const ownerID = getSessionCharacterID(session);
+    const pathArg = unwrapMarshalValue(Array.isArray(args) ? args[0] : []);
+    const commoditiesArg = unwrapMarshalValue(Array.isArray(args) ? args[1] : {}) || {};
+    log.debug(
+      `[PlanetMgr] UserTransferCommodities planetID=${planetID || "unknown"} path=${Array.isArray(pathArg) ? pathArg.length : 0}`,
+    );
+
+    const result = planetRuntimeStore.transferCommodities({
+      planetID,
+      ownerID,
+      solarSystemID: planetMeta.solarSystemID,
+      planetTypeID: planetMeta.typeID,
+      planetRadius: planetMeta.radius,
+      path: pathArg,
+      commodities: commoditiesArg,
+    });
+    if (!result.success) {
+      throwWrappedUserError(result.errorMsg || "RouteFailedValidationExpeditedSourceNotReady");
+    }
+
+    sendPlanetNotification(session, "OnRefreshPins", [[
+      result.sourcePinID,
+      result.destinationPinID,
+    ]]);
+    return [
+      result.simTime ? BigInt(result.simTime) : currentFileTime(),
+      result.sourceRunTime ? BigInt(result.sourceRunTime) : currentFileTime(),
+    ];
   }
 
   Handle_UserAbandonPlanet(args, session) {
@@ -751,6 +1170,62 @@ class PlanetMgrService extends BaseService {
     const launchID = toInt(Array.isArray(args) && args.length > 0 ? args[0] : 0, 0);
     log.debug(`[PlanetMgr] DeleteLaunch launchID=${launchID || "unknown"}`);
     return planetRuntimeStore.deleteLaunch(launchID, session && session.characterID);
+  }
+
+  Handle_GMGetPlanetDiagnostics(args, session) {
+    const planetID = extractPlanetIDFromArgs(args) ||
+      this._resolvePlanetID(args, session, { allowArgs: false });
+    const ownerID = getOptionalOwnerID(args, 1, session);
+    log.debug(
+      `[PlanetMgr] GMGetPlanetDiagnostics planetID=${planetID || "all"} ownerID=${ownerID || "all"}`,
+    );
+    return buildKeyValFromObject(planetRuntimeStore.getPlanetDiagnostics({
+      planetID,
+      ownerID,
+    }));
+  }
+
+  Handle_GMCleanupExpiredLaunches(args, session) {
+    const maxAgeDays = toInt(
+      unwrapMarshalValue(Array.isArray(args) && args.length > 0 ? args[0] : 0),
+      0,
+    );
+    const ownerID = getOptionalOwnerID(args, 1, session);
+    const result = planetRuntimeStore.cleanupExpiredLaunches({
+      maxAgeDays,
+      ownerID,
+    });
+    log.debug(
+      `[PlanetMgr] GMCleanupExpiredLaunches ownerID=${ownerID || "all"} deleted=${result.deleted}`,
+    );
+    if (result.deleted > 0) {
+      sendPlanetNotification(session, "OnPILaunchesChange", []);
+    }
+    return buildKeyValFromObject(result);
+  }
+
+  Handle_GMAddCommodity(args, session) {
+    const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
+    const pinID = toInt(unwrapMarshalValue(Array.isArray(args) ? args[0] : 0), 0);
+    const typeID = toInt(unwrapMarshalValue(Array.isArray(args) ? args[1] : 0), 0);
+    const quantity = toInt(unwrapMarshalValue(Array.isArray(args) ? args[2] : 0), 0);
+    const result = planetRuntimeStore.addCommodityToColonyPin({
+      planetID,
+      ownerID: getSessionCharacterID(session),
+      pinID,
+      typeID,
+      quantity,
+    });
+    log.debug(
+      `[PlanetMgr] GMAddCommodity planetID=${planetID || "unknown"} pinID=${pinID || "unknown"} typeID=${typeID || "unknown"} quantity=${quantity}`,
+    );
+    if (!result.success) {
+      throwWrappedUserError("CustomNotify", {
+        notify: `Failed to add PI commodity: ${result.errorMsg || "UNKNOWN"}`,
+      });
+    }
+    sendPlanetNotification(session, "OnRefreshPins", [[pinID]]);
+    return buildKeyValFromObject(result);
   }
 }
 

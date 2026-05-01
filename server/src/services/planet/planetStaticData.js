@@ -44,6 +44,7 @@ const ATTRIBUTE = Object.freeze({
   IMPORT_TAX: 1638,
   EXPORT_TAX: 1639,
   IMPORT_TAX_MULTIPLIER: 1640,
+  EXPORT_TAX_MULTIPLIER: 1641,
   PIN_EXTRACTION_QUANTITY: 1642,
   PIN_CYCLE_TIME: 1643,
   EXTRACTOR_DEPLETION_RANGE: 1644,
@@ -407,6 +408,12 @@ function getCommandCenterUpgradeCost(currentLevel, desiredLevel) {
   return desired.upgradeCost - current.upgradeCost;
 }
 
+function getTypeBasePrice(typeID) {
+  const type = getType(typeID);
+  const basePrice = Number(type && type.basePrice);
+  return Number.isFinite(basePrice) && basePrice > 0 ? basePrice : 0;
+}
+
 function getCPUAndPowerForPinType(typeID) {
   return {
     cpuUsage: toInt(getTypeAttribute(typeID, ATTRIBUTE.CPU_LOAD, 0), 0),
@@ -452,6 +459,7 @@ function getPITypeInfo(typeID) {
     published: type.published === true,
     capacity: type.capacity ?? null,
     volume: type.volume ?? null,
+    basePrice: type.basePrice ?? null,
     pinEntityType: getPinEntityType(normalizedTypeID),
     processorTier: getProcessorTier(normalizedTypeID),
     commodityTier: getCommodityTier(normalizedTypeID),
@@ -512,6 +520,7 @@ module.exports = {
   getPlanetResourceTypeIDs,
   getCommandCenterInfo,
   getCommandCenterUpgradeCost,
+  getTypeBasePrice,
   getCPUAndPowerForPinType,
   getUsageParametersForLinkType,
   getPITypeInfo,

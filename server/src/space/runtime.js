@@ -26,6 +26,7 @@ const {
 const {
   resolveItemByTypeID,
 } = require(path.join(__dirname, "../services/inventory/itemTypeRegistry"));
+const planetOrbitalState = require(path.join(__dirname, "../services/planet/planetOrbitalState"));
 const {
   getAppliedSkinMaterialSetID,
 } = require(path.join(__dirname, "../services/ship/shipCosmeticsState"));
@@ -4843,7 +4844,8 @@ function isInventoryBackedDynamicEntity(entity) {
       entity.kind === "container" ||
       entity.kind === "wreck" ||
       entity.kind === "drone" ||
-      entity.kind === "fighter"
+      entity.kind === "fighter" ||
+      entity.kind === "orbital"
     ),
   );
 }
@@ -4894,6 +4896,11 @@ function refreshInventoryBackedEntityPresentationFields(entity) {
   }
   if (entity.kind === "fighter") {
     hydrateFighterEntityFromInventoryItem(entity, itemRecord);
+  }
+  if (entity.kind === "orbital") {
+    planetOrbitalState.hydrateOrbitalEntityFromInventoryItem(entity, itemRecord, {
+      solarSystemID: entity.systemID,
+    });
   }
   return entity;
 }
@@ -13636,6 +13643,9 @@ function getRuntimeInventoryEntityKind(item) {
   if (toInt(item.categoryID, 0) === getFighterCategoryID()) {
     return "fighter";
   }
+  if (toInt(item.categoryID, 0) === planetOrbitalState.CATEGORY_ORBITAL) {
+    return "orbital";
+  }
 
   const metadata = getItemMetadata(item.typeID, item.itemName);
   const groupName = String(metadata && metadata.groupName || "").trim().toLowerCase();
@@ -13852,6 +13862,11 @@ function buildRuntimeInventoryEntity(item, systemID, nowMs) {
     entity.activeModuleEffects = new Map();
     entity.moduleReactivationLocks = new Map();
     hydrateFighterEntityFromInventoryItem(entity, item);
+  }
+  if (kind === "orbital") {
+    planetOrbitalState.hydrateOrbitalEntityFromInventoryItem(entity, item, {
+      solarSystemID: systemID,
+    });
   }
 
   return entity;

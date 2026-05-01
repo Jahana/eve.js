@@ -37,6 +37,7 @@ const RECOVERABLE_EMPTY_TABLES = new Set([
   "dungeonRuntimeState",
   "missionRuntimeState",
   "planetRuntimeState",
+  "planetOrbitalState",
 ]);
 // ────────────────────────────────────────────────────────────────────
 
