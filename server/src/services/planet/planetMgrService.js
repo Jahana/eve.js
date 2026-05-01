@@ -2,10 +2,19 @@ const path = require("path");
 
 const BaseService = require(path.join(__dirname, "../baseService"));
 const log = require(path.join(__dirname, "../../utils/logger"));
-const { getCharacterRecord } = require(path.join(
+const {
+  getCharacterRecord,
+  syncInventoryItemForSession,
+} = require(path.join(
   __dirname,
   "../character/characterState",
 ));
+const {
+  ITEM_FLAGS,
+  consumeInventoryItemQuantity,
+  findItemById,
+  getActiveShipItem,
+} = require(path.join(__dirname, "../inventory/itemStore"));
 const {
   buildBoundObjectResponse,
   buildDict,
@@ -20,155 +29,10 @@ const {
   TABLE,
   readStaticRows,
 } = require(path.join(__dirname, "../_shared/referenceData"));
+const planetStaticData = require("./planetStaticData");
 const planetRuntimeStore = require("./planetRuntimeStore");
 
 let planetMetaCache = null;
-let itemTypeGroupCache = null;
-
-const GROUP_COMMAND_PINS = 1027;
-const GROUP_EXTRACTOR_CONTROL_UNITS = 1063;
-
-const RESOURCE_TYPE = Object.freeze({
-  MICROORGANISMS: 2073,
-  BASE_METALS: 2267,
-  AQUEOUS_LIQUIDS: 2268,
-  NOBLE_METALS: 2270,
-  HEAVY_METALS: 2272,
-  PLANKTIC_COLONIES: 2286,
-  COMPLEX_ORGANISMS: 2287,
-  CARBON_COMPOUNDS: 2288,
-  AUTOTROPHS: 2305,
-  NON_CS_CRYSTALS: 2306,
-  FELSIC_MAGMA: 2307,
-  SUSPENDED_PLASMA: 2308,
-  IONIC_SOLUTIONS: 2309,
-  NOBLE_GAS: 2310,
-  REACTIVE_GAS: 2311,
-});
-
-const PLANET_RESOURCES_BY_TYPE_ID = Object.freeze({
-  // Planet (Temperate)
-  11: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.AUTOTROPHS,
-    RESOURCE_TYPE.CARBON_COMPOUNDS,
-    RESOURCE_TYPE.COMPLEX_ORGANISMS,
-    RESOURCE_TYPE.MICROORGANISMS,
-  ],
-  // Planet (Ice)
-  12: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.HEAVY_METALS,
-    RESOURCE_TYPE.MICROORGANISMS,
-    RESOURCE_TYPE.NOBLE_GAS,
-    RESOURCE_TYPE.PLANKTIC_COLONIES,
-  ],
-  // Planet (Gas)
-  13: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.IONIC_SOLUTIONS,
-    RESOURCE_TYPE.NOBLE_GAS,
-    RESOURCE_TYPE.REACTIVE_GAS,
-  ],
-  // Planet (Oceanic)
-  2014: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.CARBON_COMPOUNDS,
-    RESOURCE_TYPE.COMPLEX_ORGANISMS,
-    RESOURCE_TYPE.MICROORGANISMS,
-    RESOURCE_TYPE.PLANKTIC_COLONIES,
-  ],
-  // Planet (Lava)
-  2015: [
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.FELSIC_MAGMA,
-    RESOURCE_TYPE.HEAVY_METALS,
-    RESOURCE_TYPE.NON_CS_CRYSTALS,
-    RESOURCE_TYPE.SUSPENDED_PLASMA,
-  ],
-  // Planet (Barren)
-  2016: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.CARBON_COMPOUNDS,
-    RESOURCE_TYPE.MICROORGANISMS,
-    RESOURCE_TYPE.NOBLE_METALS,
-  ],
-  // Planet (Storm)
-  2017: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.IONIC_SOLUTIONS,
-    RESOURCE_TYPE.NOBLE_GAS,
-    RESOURCE_TYPE.SUSPENDED_PLASMA,
-  ],
-  // Planet (Plasma)
-  2063: [
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.HEAVY_METALS,
-    RESOURCE_TYPE.NOBLE_METALS,
-    RESOURCE_TYPE.NON_CS_CRYSTALS,
-    RESOURCE_TYPE.SUSPENDED_PLASMA,
-  ],
-  // Modern duplicate surface/background planet type IDs.
-  56018: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.CARBON_COMPOUNDS,
-    RESOURCE_TYPE.MICROORGANISMS,
-    RESOURCE_TYPE.NOBLE_METALS,
-  ],
-  56019: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.HEAVY_METALS,
-    RESOURCE_TYPE.MICROORGANISMS,
-    RESOURCE_TYPE.NOBLE_GAS,
-    RESOURCE_TYPE.PLANKTIC_COLONIES,
-  ],
-  56020: [
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.FELSIC_MAGMA,
-    RESOURCE_TYPE.HEAVY_METALS,
-    RESOURCE_TYPE.NON_CS_CRYSTALS,
-    RESOURCE_TYPE.SUSPENDED_PLASMA,
-  ],
-  56021: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.CARBON_COMPOUNDS,
-    RESOURCE_TYPE.COMPLEX_ORGANISMS,
-    RESOURCE_TYPE.MICROORGANISMS,
-    RESOURCE_TYPE.PLANKTIC_COLONIES,
-  ],
-  56022: [
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.HEAVY_METALS,
-    RESOURCE_TYPE.NOBLE_METALS,
-    RESOURCE_TYPE.NON_CS_CRYSTALS,
-    RESOURCE_TYPE.SUSPENDED_PLASMA,
-  ],
-  56023: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.AUTOTROPHS,
-    RESOURCE_TYPE.CARBON_COMPOUNDS,
-    RESOURCE_TYPE.COMPLEX_ORGANISMS,
-    RESOURCE_TYPE.MICROORGANISMS,
-  ],
-  56024: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.IONIC_SOLUTIONS,
-    RESOURCE_TYPE.NOBLE_GAS,
-    RESOURCE_TYPE.SUSPENDED_PLASMA,
-  ],
-  73911: [
-    RESOURCE_TYPE.AQUEOUS_LIQUIDS,
-    RESOURCE_TYPE.BASE_METALS,
-    RESOURCE_TYPE.CARBON_COMPOUNDS,
-    RESOURCE_TYPE.MICROORGANISMS,
-    RESOURCE_TYPE.NOBLE_METALS,
-  ],
-});
 
 function toInt(value, fallback = 0) {
   const numericValue = Number(value);
@@ -230,26 +94,12 @@ function getPlanetMeta(planetID) {
 }
 
 function getItemTypeGroupID(typeID) {
-  const normalizedTypeID = toInt(typeID, 0);
-  if (normalizedTypeID <= 0) {
-    return 0;
-  }
-
-  if (!itemTypeGroupCache) {
-    itemTypeGroupCache = new Map();
-    for (const row of readStaticRows(TABLE.ITEM_TYPES)) {
-      const rowTypeID = toInt(row.typeID ?? row._key, 0);
-      if (rowTypeID > 0) {
-        itemTypeGroupCache.set(rowTypeID, toInt(row.groupID, 0));
-      }
-    }
-  }
-
-  return itemTypeGroupCache.get(normalizedTypeID) || 0;
+  const typeInfo = planetStaticData.getPITypeInfo(typeID);
+  return typeInfo ? typeInfo.groupID : 0;
 }
 
 function getResourceTypeIDsForPlanetType(planetTypeID) {
-  return PLANET_RESOURCES_BY_TYPE_ID[toInt(planetTypeID, 0)] || [];
+  return planetStaticData.getPlanetResourceTypeIDs(planetTypeID);
 }
 
 function mergeColonies(primaryColonies = [], extraColonies = []) {
@@ -343,8 +193,31 @@ function buildKeyValFromObject(value = {}) {
   );
 }
 
+function toFiletimeBigInt(value, fallback = null) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+
+  try {
+    if (typeof value === "bigint") {
+      return value;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return BigInt(Math.trunc(value));
+    }
+    if (typeof value === "string") {
+      return BigInt(value);
+    }
+  } catch (error) {
+    return fallback;
+  }
+
+  return fallback;
+}
+
 function buildPinRow(pin = {}) {
   const pinID = toInt(pin.pinID ?? pin.id, 0);
+  const entityType = planetStaticData.getPinEntityType(pin.typeID);
   const row = {
     ...pin,
     id: toInt(pin.id ?? pinID, pinID),
@@ -353,7 +226,18 @@ function buildPinRow(pin = {}) {
     typeID: toInt(pin.typeID, 0),
     latitude: Number(pin.latitude) || 0,
     longitude: Number(pin.longitude) || 0,
+    lastRunTime: toFiletimeBigInt(pin.lastRunTime, currentFileTime()),
   };
+
+  if (entityType === "command" || entityType === "spaceport") {
+    row.lastLaunchTime = toFiletimeBigInt(pin.lastLaunchTime, 0n);
+  }
+
+  if (entityType === "ecu") {
+    row.expiryTime = toFiletimeBigInt(pin.expiryTime, null);
+    row.installTime = toFiletimeBigInt(pin.installTime, null);
+  }
+
   return buildKeyValFromObject(row);
 }
 
@@ -422,12 +306,19 @@ function buildResourceInfoForPlanet(planetMeta) {
   );
 }
 
-function buildResourceDataResponse(info = {}) {
-  const oldBand = toInt(info.oldBand, 0);
+function buildResourceDataResponse(planetMeta, info = {}) {
+  const resourceTypeIDs = getResourceTypeIDsForPlanetType(planetMeta.typeID);
+  const resourceTypeID = toInt(info.resourceTypeID, 0);
+  const resourceData = planetRuntimeStore.getResourceDataForClient(
+    planetMeta,
+    resourceTypeID,
+    resourceTypeIDs,
+    info,
+  );
   return buildKeyVal([
-    ["data", null],
-    ["numBands", oldBand],
-    ["proximity", Object.prototype.hasOwnProperty.call(info, "proximity") ? info.proximity : null],
+    ["data", resourceData.data],
+    ["numBands", resourceData.numBands],
+    ["proximity", resourceData.proximity],
   ]);
 }
 
@@ -518,6 +409,112 @@ function ensurePlanetBindingMap(session) {
     session._planetMgrBoundPlanets = {};
   }
   return session._planetMgrBoundPlanets;
+}
+
+function sendPlanetNotification(session, methodName, args = []) {
+  if (!session || typeof session.sendNotification !== "function") {
+    return;
+  }
+
+  try {
+    session.sendNotification(methodName, "clientID", args);
+  } catch (error) {
+    log.warn(`[PlanetMgr] Failed to send ${methodName}: ${error.message}`);
+  }
+}
+
+function getSessionCharacterID(session) {
+  return toInt(
+    session && (session.characterID ?? session.charid ?? session.charID ?? session.userid),
+    0,
+  );
+}
+
+function getSessionShipID(session, characterID = 0) {
+  const sessionShipID = toInt(
+    session && (
+      session.shipID ??
+      session.shipid ??
+      session.shipId ??
+      (session._space && session._space.shipID)
+    ),
+    0,
+  );
+  if (sessionShipID > 0) {
+    return sessionShipID;
+  }
+
+  const activeShip = getActiveShipItem(characterID);
+  return toInt(activeShip && activeShip.itemID, 0);
+}
+
+function isCommandCenterSourceItem(item, pin, characterID, shipID) {
+  if (!item || !pin) {
+    return false;
+  }
+
+  const allowedSourceFlags = new Set([
+    ITEM_FLAGS.CARGO_HOLD,
+    ITEM_FLAGS.SPECIALIZED_COMMAND_CENTER_HOLD,
+    ITEM_FLAGS.COLONY_RESOURCES_HOLD,
+  ]);
+
+  return (
+    toInt(item.ownerID, 0) === characterID &&
+    toInt(item.typeID, 0) === toInt(pin.typeID, 0) &&
+    toInt(item.locationID, 0) === shipID &&
+    allowedSourceFlags.has(toInt(item.flagID, 0)) &&
+    planetStaticData.getPinEntityType(pin.typeID) === "command"
+  );
+}
+
+function syncInventoryChanges(session, changes = []) {
+  for (const change of Array.isArray(changes) ? changes : []) {
+    if (!change || !change.item) {
+      continue;
+    }
+    syncInventoryItemForSession(
+      session,
+      change.item,
+      change.previousData || {},
+      { emitCfgLocation: true },
+    );
+  }
+}
+
+function consumePlacedCommandCenterItems(colony, session) {
+  const characterID = getSessionCharacterID(session);
+  const shipID = getSessionShipID(session, characterID);
+  if (characterID <= 0 || shipID <= 0 || !colony) {
+    return;
+  }
+
+  const commandPins = (Array.isArray(colony.pins) ? colony.pins : [])
+    .filter((pin) => planetStaticData.getPinEntityType(pin && pin.typeID) === "command");
+  for (const pin of commandPins) {
+    const pinID = toInt(pin.pinID ?? pin.id, 0);
+    if (pinID <= 0) {
+      continue;
+    }
+
+    const sourceItem = findItemById(pinID);
+    if (!isCommandCenterSourceItem(sourceItem, pin, characterID, shipID)) {
+      continue;
+    }
+
+    const consumeResult = consumeInventoryItemQuantity(pinID, 1, {
+      removeContents: false,
+    });
+    if (!consumeResult.success) {
+      log.warn(
+        `[PlanetMgr] Failed to consume command center itemID=${pinID}: ${consumeResult.errorMsg || "UNKNOWN"}`,
+      );
+      continue;
+    }
+
+    log.debug(`[PlanetMgr] Consumed command center itemID=${pinID} for PI deployment`);
+    syncInventoryChanges(session, consumeResult.data && consumeResult.data.changes);
+  }
 }
 
 class PlanetMgrService extends BaseService {
@@ -618,10 +615,16 @@ class PlanetMgrService extends BaseService {
     const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
     const info = unwrapMarshalValue(Array.isArray(args) ? args[0] : {}) || {};
     const resourceTypeID = toInt(info.resourceTypeID, 0);
+    const response = buildResourceDataResponse(getPlanetMeta(planetID), info);
+    const entries = new Map(response.args.entries || []);
+    const data = entries.get("data");
+    const dataBytes = data && data.type === "bytes" && Buffer.isBuffer(data.value)
+      ? data.value.length
+      : 0;
     log.debug(
-      `[PlanetMgr] GetResourceData planetID=${planetID || "unknown"} resourceTypeID=${resourceTypeID || "unknown"}`,
+      `[PlanetMgr] GetResourceData planetID=${planetID || "unknown"} resourceTypeID=${resourceTypeID || "unknown"} oldBand=${toInt(info.oldBand, 0)} newBand=${toInt(info.newBand, 0)} dataBytes=${dataBytes}`,
     );
-    return buildResourceDataResponse(info);
+    return response;
   }
 
   Handle_GetFullNetworkForOwner(args, session) {
@@ -647,7 +650,9 @@ class PlanetMgrService extends BaseService {
     for (const colony of planetRuntimeStore.listColoniesForPlanet(planetID)) {
       const ownerID = toInt(colony.ownerID, 0);
       const commandPin = (Array.isArray(colony.pins) ? colony.pins : [])
-        .find((pin) => getItemTypeGroupID(pin && pin.typeID) === GROUP_COMMAND_PINS);
+        .find((pin) => (
+          getItemTypeGroupID(pin && pin.typeID) === planetStaticData.GROUP.COMMAND_PINS
+        ));
       if (ownerID > 0 && commandPin) {
         entries.push([ownerID, buildCommandPinSummary(commandPin, ownerID)]);
       }
@@ -661,12 +666,76 @@ class PlanetMgrService extends BaseService {
     for (const colony of planetRuntimeStore.listColoniesForPlanet(planetID)) {
       const ownerID = toInt(colony.ownerID, 0);
       for (const pin of Array.isArray(colony.pins) ? colony.pins : []) {
-        if (getItemTypeGroupID(pin && pin.typeID) === GROUP_EXTRACTOR_CONTROL_UNITS) {
+        if (
+          getItemTypeGroupID(pin && pin.typeID) ===
+          planetStaticData.GROUP.EXTRACTION_CONTROL_UNIT_PINS
+        ) {
           extractors.push(buildExtractorSummary(pin, ownerID));
         }
       }
     }
     return buildList(extractors);
+  }
+
+  Handle_UserUpdateNetwork(args, session) {
+    const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
+    const planetMeta = getPlanetMeta(planetID);
+    const serializedChanges = unwrapMarshalValue(Array.isArray(args) ? args[0] : []);
+    const commandCount = Array.isArray(serializedChanges) ? serializedChanges.length : 0;
+    log.debug(
+      `[PlanetMgr] UserUpdateNetwork planetID=${planetID || "unknown"} commands=${commandCount}`,
+    );
+
+    const resourceTypeIDs = getResourceTypeIDsForPlanetType(planetMeta.typeID);
+    planetRuntimeStore.getOrCreatePlanetResources(planetMeta, resourceTypeIDs);
+    const colony = planetRuntimeStore.applyUserUpdateNetwork({
+      planetID,
+      ownerID: getSessionCharacterID(session),
+      solarSystemID: planetMeta.solarSystemID,
+      planetTypeID: planetMeta.typeID,
+      serializedChanges,
+    });
+
+    consumePlacedCommandCenterItems(colony, session);
+    sendPlanetNotification(session, "OnPlanetChangesSubmitted", [planetID]);
+    return buildSerializedColony(colony);
+  }
+
+  Handle_UserAbandonPlanet(args, session) {
+    const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
+    log.debug(`[PlanetMgr] UserAbandonPlanet planetID=${planetID || "unknown"}`);
+    const result = planetRuntimeStore.abandonColony(
+      planetID,
+      session && session.characterID,
+    );
+    sendPlanetNotification(session, "OnMajorPlanetStateUpdate", [planetID, true]);
+    return result;
+  }
+
+  Handle_GetProgramResultInfo(args, session) {
+    const planetID = this._resolvePlanetID(args, session, { allowArgs: false });
+    const planetMeta = getPlanetMeta(planetID);
+    const resourceTypeID = toInt(Array.isArray(args) && args.length > 1 ? args[1] : 0, 0);
+    const heads = unwrapMarshalValue(Array.isArray(args) && args.length > 2 ? args[2] : []);
+    const headRadius = Number(
+      unwrapMarshalValue(Array.isArray(args) && args.length > 3 ? args[3] : 0.01),
+    ) || 0.01;
+
+    planetRuntimeStore.getOrCreatePlanetResources(
+      planetMeta,
+      getResourceTypeIDsForPlanetType(planetMeta.typeID),
+    );
+    const result = planetRuntimeStore.estimateProgramResult({
+      planetID,
+      resourceTypeID,
+      heads,
+      headRadius,
+    });
+    log.debug(
+      `[PlanetMgr] GetProgramResultInfo planetID=${planetID || "unknown"} resourceTypeID=${resourceTypeID || "unknown"} qty=${result.qtyToDistribute}`,
+    );
+
+    return [result.qtyToDistribute, result.cycleTime, result.numCycles];
   }
 
   Handle_GetMyLaunchesDetails(args, session) {

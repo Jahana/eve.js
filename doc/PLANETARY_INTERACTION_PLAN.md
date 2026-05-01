@@ -4,6 +4,15 @@ This plan tracks implementation of EVE Planetary Interaction, also known as PI. 
 
 Alpha clone limits are not a gameplay goal for this server. Only implement those checks if the client explicitly requires a server response to keep the UI stable.
 
+## Progress Snapshot
+
+- Phase 0 complete: planet moniker binding, basic planet info, persistent resource qualities, safe empty read-only calls.
+- Phase 1 static authority complete: `planetSchematics` table, PI structure/resource/commodity classification, key dogma attribute helpers, command-center upgrade constants, and hardcoded planet-type resource map.
+- Phase 2 basic colony editing complete: `UserUpdateNetwork` accepts all client command stream IDs, remaps temporary pin/route IDs, persists colony pins/links/routes, returns client-shaped colony rows, supports `UserAbandonPlanet`, and consumes the placed command center item from ship inventory when present.
+- Phase 3 server-native resource layers complete: each visited planet/resource gets persistent deterministic hotspots, ECU program estimates use the layer values and client-style head overlap, installed ECU programs write depletion events that affect later estimates, and `GetResourceData(info)` now returns experimental deterministic heatmap bytes.
+- Still open from Phase 3: validate the experimental heatmap bytes against the V23 client. If the client rejects them or renders nonsense, we need the proprietary `PlanetResources.builder.CreateSHFromBuffer` buffer details or a live non-null payload capture.
+- Still open from Phase 2: authoritative server-side validation, non-command-center placement costs, strict inventory ownership checks, CPU/power/link bandwidth enforcement, and real PI simulation remain later-phase work.
+
 ## Client Surface
 
 The client enters PI through `eveMoniker.GetPlanet(planetID)`, which creates a `planetMgr` moniker. That means the server must support `MachoResolveObject` and `MachoBindObject` before normal planet calls are made.
@@ -58,7 +67,11 @@ Resource records should be keyed by planet ID and include:
 - persistent planet/resource seed values
 - resource type IDs available on that planet
 - display quality values returned by `GetPlanetResourceInfo`
-- later: resource layer coefficients/bands used by `GetResourceData`
+- server-native resource layers by resource type:
+  - background
+  - hotspots
+  - depletion events
+- experimental generated coefficient bytes for non-null `GetResourceData`
 
 Colony records should be keyed as `${planetID}:${ownerID}` and include:
 
@@ -168,8 +181,8 @@ Goal: let a character place, edit, submit, and reload a persistent colony.
 
 Server work:
 
-- Implement `UserUpdateNetwork(serializedChanges)`.
-- Parse all command stream IDs:
+- Implemented `UserUpdateNetwork(serializedChanges)`.
+- Implemented parsing for all command stream IDs:
   - create/remove pin
   - create/remove/upgrade link
   - create/remove route
@@ -177,31 +190,36 @@ Server work:
   - upgrade command center
   - add/remove/move extractor head
   - install program
-- Persist colonies in `planetRuntimeState.coloniesByKey`.
-- Return serialized colony data matching client `ColonyData.RestorePinFromRow`, `RestoreLinkFromRow`, and `RestoreRouteFromRow`.
-- Add `UserAbandonPlanet()`.
-- Update `GetPlanetsForChar()` to include runtime colonies.
-- Send relevant planet notifications after submit/abandon.
+- Implemented persistence in `planetRuntimeState.coloniesByKey`.
+- Implemented serialized colony data matching client `ColonyData.RestorePinFromRow`, `RestoreLinkFromRow`, and `RestoreRouteFromRow`.
+- Implemented `UserAbandonPlanet()`.
+- `GetPlanetsForChar()` includes runtime colonies.
+- Submit/abandon send basic planet notifications when the session supports them.
+- Command-center deployment consumes the matching ship-inventory item after a successful submit and sends normal inventory item-change notifications.
 
 Data to create:
 
-- Stable server pin ID allocator.
-- Stable route ID allocator.
+- Implemented stable server pin ID allocator.
+- Implemented stable route ID allocator.
 - Optional command history/audit data for debugging serialized changes.
 
 Research/data still needed:
 
-- Exact handling of temporary client pin/route IDs during submit.
-- Whether the client expects submit to return ID remapping or only a fully serialized colony.
+- Temporary client pin/route IDs are handled by returning a fully serialized colony with server IDs. No separate remap payload has been needed so far.
 - ISK and inventory hooks for placing command centers and structures.
 - Skill requirements that the client does not enforce locally.
+- Exact notification payload parity for multiplayer/client cache refreshes.
+- Stacked command-center deployment behavior needs live-client verification if players can deploy directly from stacks larger than one.
 
 Tests:
 
 - All command stream IDs parse correctly.
-- New colony persists across service instance reload.
+- New colony persists in runtime state and appears in `GetPlanetsForChar()`.
 - Submitted colony round-trips through client-shaped serialized rows.
-- Invalid ownership, duplicate command center, and impossible links are rejected.
+- `GetProgramResultInfo()` returns deterministic placeholder ECU program values.
+- `UserAbandonPlanet()` removes the runtime colony.
+- Command-center item consumption removes the deployed item from ship inventory.
+- Still needed: invalid ownership, duplicate command center, impossible links, and resource-limit rejection coverage.
 
 ## Phase 3: Resource Layers And ECU Programs
 
@@ -209,10 +227,22 @@ Goal: make resource scanning and ECU extraction meaningful and persistent.
 
 Server work:
 
-- Replace Phase 0 null resource layer data with real layer payloads for `GetResourceData(info)`.
-- Store persistent resource layer seeds/coefficient data per planet/resource.
-- Implement `GetProgramResultInfo(pinID, typeID, heads, headRadius)`.
-- Implement ECU program install data:
+- Store persistent server-native resource layer seeds and hotspot data per planet/resource.
+- Implement experimental `GetResourceData(info)` heatmap payloads while the exact spherical-harmonic buffer semantics are unknown:
+  - ensure the planet/resource layer exists
+  - generate deterministic little-endian `float32` coefficient bytes from the resource layer seed/hotspots
+  - return `newBand * newBand * 4` bytes, matching EvEmu's observed wire-size rule
+  - return `numBands = newBand`
+  - marshal `data` as raw Python-string bytes, not a text string or PyBuffer
+  - fall back to `data: null` only when the planet/resource/band request cannot be resolved
+- Implement `GetProgramResultInfo(pinID, typeID, heads, headRadius)` from resource layer values.
+- Apply client-style own-head overlap using `ecuOverlapFactor`.
+- Use ECU dogma values where available:
+  - extraction quantity
+  - overlap factor
+  - depletion range
+  - depletion rate
+- Implemented ECU program install data:
   - resource type
   - head radius
   - head coordinates
@@ -220,25 +250,46 @@ Server work:
   - quantity per cycle
   - install time
   - expiry time
-- Apply depletion/regeneration rules or a deterministic approximation.
+- Apply a deterministic depletion/regeneration approximation:
+  - each installed ECU program adds a persisted depletion event to the resource layer
+  - active depletion lowers future output near those heads
+  - expired depletion recovers over time
 
 Data to create:
 
-- Resource layer coefficients or server-native layer model per planet/resource.
-- Program output history or depletion state.
+- Implemented: `resourcesByPlanetID[*].layersByTypeID`.
+- Implemented per layer:
+  - version
+  - seed
+  - quality
+  - background
+  - hotspots
+  - depletion events
+- Still needed for higher confidence resource heat maps: prove the experimental byte format against the client or replace it with a closer `_eveplanetresources` coefficient encoder.
+- Implemented experimental converter:
+  - source: server-native layer seed, quality, hotspots, and depletion events
+  - output: first `newBand^2` generated `float32` coefficients
+  - goal: visible client heatmap, not live-server accuracy
 
 Research/data still needed:
 
-- Exact spherical harmonic buffer format for `CreateSHFromBuffer`.
-- Client constants for resource proximity/bands versus skills.
-- Output math parity with client `baseColony.CreateProgram` and ECU pin logic.
-- How much depletion fidelity is worth implementing for this server.
+- Validate whether the V23 client accepts the experimental coefficient buffer.
+- Exact spherical harmonic coefficient ordering/normalization for `CreateSHFromBuffer`.
+- A live capture of a successful `GetResourceData(info)` response with non-null `data` would unblock the encoder if the experimental buffer fails.
+- If we need live data, capture for one planet/resource at several `newBand` values, ideally `3`, `5`, `15`, and `30`; include `resourceTypeID`, `oldBand`, `newBand`, `proximity`, returned `numBands`, returned byte length, and returned data hex/base64.
+- Client constants for resource proximity/bands versus skills are partially identified, but the decompiled `appConst.py` does not expose the proximity limit tuples cleanly.
+- Server output math now follows the useful parts of client `baseColony.CreateProgram`: layer value sampling, ECU max volume, program length, cycle time, and own-head overlap. Remaining parity work is other-colony/other-ECU overlap and exact live depletion/noise curves.
+- Decide whether to keep the deterministic depletion approximation or pursue closer Tranquility-style depletion behavior.
 
 Tests:
 
-- Resource data response upgrades bands based on request info.
-- ECU output is deterministic for the same planet/resource/head positions.
-- Installed program persists and reloads.
+- Implemented: resource layer records persist with stable hotspot data.
+- Implemented: resource value sampling is deterministic and clamped to the client max value.
+- Implemented: ECU output is deterministic for the same planet/resource/head positions.
+- Implemented: installed programs persist and write depletion events.
+- Implemented: depletion reduces later output around the same heads.
+- Implemented: resource data response returns deterministic `newBand^2 * 4` byte payloads and larger-band payloads preserve smaller-band prefixes.
+- Still needed: client-side validation of the experimental heatmap encoder.
 - Expired programs stop producing.
 
 ## Phase 4: Colony Simulation And Manufacturing
